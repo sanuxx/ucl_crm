@@ -6,7 +6,7 @@ Built with **vanilla HTML, CSS and JavaScript** — no frameworks, no build step
 
 ## Live Demo
 
-👉 **https://sanuxx.github.io/uniconnect-crm/**
+👉 **[sanuxx.github.io/uniconnect-crm](https://sanuxx.github.io/uniconnect-crm/)**
 
 > Replace the URL above with your actual Pages URL after enabling it (see below).
 
@@ -26,7 +26,7 @@ python3 -m http.server 8080
 The demo is seeded with ~68 leads, 40 inquiries, 3 intake cycles and 11 users.
 
 | # | What to try | Why it's interesting |
-|---|---|---|
+| --- | --- | --- |
 | 1 | Switch **Role** in the top bar (Counsellor → Manager → CEO) | Row-level security and tenant partitioning applied live — each role sees a different lead set |
 | 2 | **Pipeline** → drag a card backwards from Qualified to Open | Blocked by the configurable stage-transition rules |
 | 3 | **Leads** → open a lead → change Lead Source to *Student* / *Staff* | Dynamic conditional fields appear |
@@ -40,7 +40,7 @@ Use **↺ Reset Demo Data** on the Dashboard to restore the seeded state at any 
 ## Modules
 
 | Module | Scope | Features |
-|---|---|---|
+| --- | --- | --- |
 | **M1** | Configurable Data Model & Forms | 9 |
 | **M2** | Flexible Pipelines & Stages | 20 |
 | **M3** | Role-Based Access & Organization | 15 |
@@ -53,19 +53,20 @@ Each feature is tagged in the UI with its use-case reference (e.g. `UC61`) so it
 
 ## Project Structure
 
-```
+A flat structure — every file sits at the repository root.
+
+```text
 .
-├── index.html              # App shell — the only page (SPA, hash-routed)
-├── assets/
-│   ├── css/
-│   │   └── style.css       # "Aurora" design system — tokens + all components
-│   └── js/
-│       ├── data.js         # Seed data, schema, config constants, localStorage layer
-│       ├── utils.js        # RBAC, formatting, charts, PDF/CSV export, SLA helpers
-│       └── app.js          # Hash router + every view/render function
-├── .nojekyll               # Serve files verbatim (skip Jekyll processing)
+├── index.html    # App shell — the only page (SPA, hash-routed)
+├── style.css     # "Aurora" design system — tokens + all components
+├── data.js       # Seed data, schema, config constants, localStorage layer
+├── utils.js      # RBAC, formatting, charts, PDF/CSV export, SLA helpers
+├── app.js        # Hash router + every view/render function
+├── .nojekyll     # Serve files verbatim (skip Jekyll processing)
 └── README.md
 ```
+
+Scripts load in dependency order — `data.js` → `utils.js` → `app.js` — so keep that order in `index.html` if you add more.
 
 ## Architecture Notes
 
@@ -94,7 +95,7 @@ No build step or workflow file is needed — the site is served exactly as commi
 
 ## Note on Specifications
 
-The source specification documents are marked *Confidential — Internal Use Only* and are therefore **excluded from version control** via `.gitignore` (kept locally in `_specs/`). Do not commit them to a public repository.
+The source specification documents (`.pdf` / `.docx`) are marked *Confidential — Internal Use Only* and are therefore **excluded from version control** via `.gitignore`. They remain in your local working folder but are never committed. Do not add them to a public repository.
 
 ---
 

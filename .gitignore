@@ -1,7 +1,9 @@
 # Confidential source specifications — NOT for publication.
 # These documents are marked "Confidential — Internal Use Only".
-# GitHub Pages repositories are publicly readable, so they stay local.
-_specs/
+# GitHub Pages requires a PUBLIC repo on the free plan, so these stay local.
+*.pdf
+*.docx
+*.doc
 
 # Dependencies (none required at runtime — this is a zero-dependency static site)
 node_modules/
