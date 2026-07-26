@@ -1,0 +1,20 @@
+# Confidential source specifications — NOT for publication.
+# These documents are marked "Confidential — Internal Use Only".
+# GitHub Pages repositories are publicly readable, so they stay local.
+_specs/
+
+# Dependencies (none required at runtime — this is a zero-dependency static site)
+node_modules/
+package-lock.json
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+
+# Logs
+*.log
+npm-debug.log*
