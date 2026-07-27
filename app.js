@@ -144,7 +144,7 @@ window.addEventListener("hashchange", router);
 function renderDashboard(root) {
   const leads = visibleLeads();
   const stageCounts = {};
-  STAGES.forEach(s => stageCounts[s] = leads.filter(l => l.stage === s && !l.deactivated).length);
+  stages().forEach(s => stageCounts[s] = leads.filter(l => l.stage === s && !l.deactivated).length);
   const totalInquiries = DB.inquiries.length;
   const qualifiedLeads = leads.filter(l => l.stage === "Qualified" || l.stage === "Converted").length;
   const convToLeadPct = totalInquiries ? ((DB.inquiries.filter(i => i.convertedToLead).length / totalInquiries) * 100).toFixed(1) : 0;
@@ -167,7 +167,7 @@ function renderDashboard(root) {
 
   // Hero progress pills — share of the visible pipeline sitting in each stage
   const activeLeads = leads.filter(l => !l.deactivated).length || 1;
-  const pills = STAGES.map(s => {
+  const pills = stages().map(s => {
     const pct = Math.round((stageCounts[s] / activeLeads) * 100);
     return `<div class="ppill" style="flex:${Math.max(1, pct)}">
       <div class="pp-label">${esc(stageLabel(s))}</div>
@@ -204,7 +204,7 @@ function renderDashboard(root) {
     <div class="two-col">
       ${canViewWidget("pipeline") ? `<div class="card">
         <h3>Pipeline Summary by Stage <span class="pill">UC62 / UC85</span></h3>
-        ${simpleBarChart(STAGES.map(s => ({ label: stageLabel(s), value: stageCounts[s], color: stageColor(s) })))}
+        ${simpleBarChart(stages().map(s => ({ label: stageLabel(s), value: stageCounts[s], color: stageColor(s) })))}
       </div>` : ""}
       ${canViewWidget("followups") ? `<div class="card">
         <h3>Follow-Up Status <span class="pill">UC86</span></h3>
@@ -252,11 +252,11 @@ function renderLeads(root) {
 
     <div class="toolbar">
       <input type="text" id="leadSearch" placeholder="Search name, mobile, email..." value="${esc(f.search)}">
-      <select id="filterUniversity"><option value="">All Universities</option>${UNIVERSITIES.map(u => `<option ${f.university === u ? "selected" : ""}>${u}</option>`).join("")}</select>
-      <select id="filterProgram"><option value="">All Programs</option>${PROGRAMS.map(p => `<option ${f.program === p ? "selected" : ""}>${p}</option>`).join("")}</select>
-      <select id="filterSource"><option value="">All Sources</option>${LEAD_SOURCES.map(s => `<option ${f.source === s ? "selected" : ""}>${s}</option>`).join("")}</select>
-      <select id="filterDigitalSub" class="${f.source === "Digital" ? "" : "hidden"}" title="Digital lead sub-source (UC25)"><option value="">All Digital Sub-Sources — UC25</option>${DIGITAL_SUBSOURCES.map(s => `<option ${f.digitalSub === s ? "selected" : ""}>${s}</option>`).join("")}</select>
-      <select id="filterDomain"><option value="">All Domains / Branches</option>${DOMAINS.map(d => `<option ${f.domain === d ? "selected" : ""}>${d}</option>`).join("")}</select>
+      <select id="filterUniversity"><option value="">All Universities</option>${picklist('universities').map(u => `<option ${f.university === u ? "selected" : ""}>${u}</option>`).join("")}</select>
+      <select id="filterProgram"><option value="">All Programs</option>${picklist('programs').map(p => `<option ${f.program === p ? "selected" : ""}>${p}</option>`).join("")}</select>
+      <select id="filterSource"><option value="">All Sources</option>${picklist('leadSources').map(s => `<option ${f.source === s ? "selected" : ""}>${s}</option>`).join("")}</select>
+      <select id="filterDigitalSub" class="${f.source === "Digital" ? "" : "hidden"}" title="Digital lead sub-source (UC25)"><option value="">All Digital Sub-Sources — UC25</option>${picklist('digitalSubSources').map(s => `<option ${f.digitalSub === s ? "selected" : ""}>${s}</option>`).join("")}</select>
+      <select id="filterDomain"><option value="">All Domains / Branches</option>${picklist('domains').map(d => `<option ${f.domain === d ? "selected" : ""}>${d}</option>`).join("")}</select>
       <button class="btn secondary sm" onclick="openSaveSegmentModal()">💾 Save as Segment</button>
       ${canBulkAction() ? `<button class="btn secondary sm ${f.nonCollectible ? "danger" : ""}" id="nonCollectibleBtn" title="UC40">🎯 Non-Collectible Candidates</button><button class="btn secondary sm" id="bulkAssignBtn">Bulk Assign</button><button class="btn secondary sm" id="bulkDeactivateBtn">Bulk Deactivate Non-Collectible</button><button class="btn secondary sm" id="bulkIntakeBtn">Bulk Assign Intake</button>` : ""}
     </div>
@@ -264,7 +264,7 @@ function renderLeads(root) {
     ${(DB.segments || []).length ? `<div class="chip-row">${DB.segments.map((s, idx) => `<div class="chip" onclick='applySegment(${idx})'>${esc(s.name)}</div>`).join("")}</div>` : ""}
 
     <div class="tabs" id="leadTabs">
-      ${STAGES.concat(["Deactivated"]).map(s => {
+      ${stages().concat(["Deactivated"]).map(s => {
         const count = s === "Deactivated" ? leads.filter(l => l.deactivated).length : leads.filter(l => l.stage === s && !l.deactivated).length;
         return `<div class="tab ${state.leadTab === s ? "active" : ""}" data-tab="${s}">${esc(stageLabel(s))} <span class="count">${count}</span></div>`;
       }).join("")}
@@ -379,7 +379,7 @@ function openExhibitionModal() {
       <div class="field"><label class="required">Name</label><input id="ex_name" autofocus></div>
       <div class="field"><label class="required">Mobile</label><input id="ex_mobile" type="tel"></div>
       <div class="field"><label>Email</label><input id="ex_email" type="email"></div>
-      <div class="field"><label>Interested Program</label><select id="ex_program">${PROGRAMS.map(p => `<option>${p}</option>`).join("")}</select></div>
+      <div class="field"><label>Interested Program</label><select id="ex_program">${picklist('programs').map(p => `<option>${p}</option>`).join("")}</select></div>
     </div>
     <div class="modal-footer"><button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" onclick="saveExhibitionLead()">Submit</button></div>
   `);
@@ -393,7 +393,7 @@ function saveExhibitionLead() {
     studentId: "", staffName: "", university: "", program: document.getElementById("ex_program").value, district: "",
     districtOther: "", examType: "Local A/L", resultsPending: true, olResult: "", alResult: "", languageTest: "None", languageScore: "",
     stage: "Open", deactivated: false, deactivationReason: "", lossReason: "", assignedTo: rand(DB.users.filter(u => u.role === "Counsellor").map(u => u.id)),
-    intakeId: "", domain: rand(DOMAINS), isReferral: false, referralType: "", agentId: "",
+    intakeId: "", domain: rand(picklist('domains')), isReferral: false, referralType: "", agentId: "",
     checklist: makeChecklist(), commissionStatus: "Pending", tuitionFee: 850000, amountPaid: 0, outstandingBalance: 0, nextFollowUp: addDaysStr(todayStr(), 1), followUpLog: [], escalated: false,
     createdAt: new Date().toISOString(), activity: [{ ts: new Date().toISOString(), user: getCurrentUser().name, type: "Create", text: "Captured via Exhibition minimal-data form (UC75)" }]
   });
@@ -549,16 +549,16 @@ function generateSampleImport() {
       const lead = {
         id: uid("lead"), name: `${first} ${last}`, mobile: "07" + Math.floor(10000000 + Math.random() * 89999999),
         email: `${first}.${last}@bulk.example.com`.toLowerCase(), leadSource: "Bulk Upload", studentId: "", staffName: "",
-        university: rand(UNIVERSITIES), program: rand(PROGRAMS), district: rand(DISTRICTS), examType: "Local A/L",
+        university: rand(picklist('universities')), program: rand(picklist('programs')), district: rand(picklist('districts')), examType: "Local A/L",
         resultsPending: true, olResult: "", alResult: "", languageTest: "None", languageScore: "",
         stage: "Open", deactivated: false, deactivationReason: "", lossReason: "", assignedTo: rand(DB.users.filter(u => u.role === "Counsellor").map(u => u.id)),
-        intakeId: "", domain: rand(DOMAINS), isReferral: false, referralType: "", agentId: "",
+        intakeId: "", domain: rand(picklist('domains')), isReferral: false, referralType: "", agentId: "",
         checklist: makeChecklist(), commissionStatus: "Pending", tuitionFee: 850000, amountPaid: 0, outstandingBalance: 0, nextFollowUp: addDaysStr(todayStr(), 1), followUpLog: [], escalated: false,
         createdAt: new Date().toISOString(), activity: [{ ts: new Date().toISOString(), user: "System", type: "Create", text: "Bulk imported (UC24/UC53), auto-classified to Open" }]
       };
       DB.leads.push(lead);
     } else {
-      DB.inquiries.push({ id: uid("inq"), name: `${first} ${last}`, mobile: "07" + Math.floor(10000000 + Math.random() * 89999999), email: `${first}.${last}@bulk.example.com`, program: rand(PROGRAMS), source: "Bulk Import", createdAt: new Date().toISOString(), convertedToLead: false });
+      DB.inquiries.push({ id: uid("inq"), name: `${first} ${last}`, mobile: "07" + Math.floor(10000000 + Math.random() * 89999999), email: `${first}.${last}@bulk.example.com`, program: rand(picklist('programs')), source: "Bulk Import", createdAt: new Date().toISOString(), convertedToLead: false });
     }
     count++;
   }
@@ -586,7 +586,7 @@ function processCsvUpload() {
           studentId: "", staffName: "", university: row.university || "", program: row.program || "", district: "Other",
           examType: "Local A/L", resultsPending: true, olResult: "", alResult: "", languageTest: "None", languageScore: "",
           stage: "Open", deactivated: false, deactivationReason: "", lossReason: "", assignedTo: rand(DB.users.filter(u => u.role === "Counsellor").map(u => u.id)),
-          intakeId: "", domain: rand(DOMAINS), isReferral: false, referralType: "", agentId: "",
+          intakeId: "", domain: rand(picklist('domains')), isReferral: false, referralType: "", agentId: "",
           checklist: makeChecklist(), commissionStatus: "Pending", tuitionFee: 850000, amountPaid: 0, outstandingBalance: 0, nextFollowUp: addDaysStr(todayStr(), 1), followUpLog: [], escalated: false,
           createdAt: new Date().toISOString(), activity: [{ ts: new Date().toISOString(), user: "System", type: "Create", text: "Bulk imported from CSV" }]
         });
@@ -614,7 +614,7 @@ function openLeadModal(leadId) {
     studentId: "", staffName: "", university: "", program: "", district: "", districtOther: "",
     examType: "Local A/L", resultsPending: false, olResult: "", alResult: "", languageTest: "None", languageScore: "",
     stage: "Open", deactivated: false, deactivationReason: "", lossReason: "", assignedTo: DB.users.find(u => u.role === "Counsellor").id,
-    intakeId: "", domain: DOMAINS[0], isReferral: false, referralType: "", agentId: "",
+    intakeId: "", domain: picklist('domains')[0], isReferral: false, referralType: "", agentId: "",
     checklist: makeChecklist(), commissionStatus: "Pending", tuitionFee: 850000, amountPaid: 0, outstandingBalance: 0, nextFollowUp: addDaysStr(todayStr(), 1), followUpLog: [], escalated: false,
     createdAt: new Date().toISOString(), activity: []
   } : JSON.parse(JSON.stringify(lead));
@@ -657,17 +657,17 @@ function renderLeadModalTab() {
         <div class="field"><label class="required">Mobile</label><input id="f_mobile" value="${esc(L.mobile)}"></div>
         <div class="field"><label>Email</label><input id="f_email" value="${esc(L.email)}"></div>
         <div class="field"><label>Lead Source</label>
-          <select id="f_source">${LEAD_SOURCES.map(s => `<option ${L.leadSource === s ? "selected" : ""}>${s}</option>`).join("")}</select>
+          <select id="f_source">${picklist('leadSources').map(s => `<option ${L.leadSource === s ? "selected" : ""}>${s}</option>`).join("")}</select>
         </div>
         <div class="field ${L.leadSource === "Digital" ? "" : "hidden"}" id="wrap_digitalSub"><label>Digital Sub-Source</label>
-          <select id="f_digitalSub">${DIGITAL_SUBSOURCES.map(s => `<option ${L.digitalSubSource === s ? "selected" : ""}>${s}</option>`).join("")}</select>
+          <select id="f_digitalSub">${picklist('digitalSubSources').map(s => `<option ${L.digitalSubSource === s ? "selected" : ""}>${s}</option>`).join("")}</select>
         </div>
         <div class="field ${L.leadSource === "Student" ? "" : "hidden"}" id="wrap_studentId"><label class="required">Student ID <span class="pill">UC21 dynamic</span></label><input id="f_studentId" value="${esc(L.studentId)}"></div>
         <div class="field ${L.leadSource === "Staff" ? "" : "hidden"}" id="wrap_staffName"><label class="required">Staff Name <span class="pill">UC22 dynamic</span></label><input id="f_staffName" value="${esc(L.staffName)}"></div>
-        <div class="field"><label>University</label><select id="f_university"><option value="">-- Select --</option>${UNIVERSITIES.map(u => `<option ${L.university === u ? "selected" : ""}>${u}</option>`).join("")}</select></div>
-        <div class="field"><label>Program</label><select id="f_program"><option value="">-- Select --</option>${PROGRAMS.map(p => `<option ${L.program === p ? "selected" : ""}>${p}</option>`).join("")}</select></div>
+        <div class="field"><label>University</label><select id="f_university"><option value="">-- Select --</option>${picklist('universities').map(u => `<option ${L.university === u ? "selected" : ""}>${u}</option>`).join("")}</select></div>
+        <div class="field"><label>Program</label><select id="f_program"><option value="">-- Select --</option>${picklist('programs').map(p => `<option ${L.program === p ? "selected" : ""}>${p}</option>`).join("")}</select></div>
         <div class="field"><label>District <span class="pill">UC58</span></label>
-          <select id="f_district">${DISTRICTS.map(d => `<option ${L.district === d ? "selected" : ""}>${d}</option>`).join("")}</select>
+          <select id="f_district">${picklist('districts').map(d => `<option ${L.district === d ? "selected" : ""}>${d}</option>`).join("")}</select>
         </div>
         <div class="field ${L.district === "Other" ? "" : "hidden"}" id="wrap_districtOther"><label>Specify District <span class="pill">UC58 - AF1</span></label><input id="f_districtOther" value="${esc(L.districtOther || "")}" placeholder="Enter district manually"></div>
         <div class="field"><label>Intake Cycle</label><select id="f_intake"><option value="">-- None --</option>${DB.intakes.map(i => `<option value="${i.id}" ${L.intakeId === i.id ? "selected" : ""}>${i.name}</option>`).join("")}</select></div>
@@ -677,13 +677,13 @@ function renderLeadModalTab() {
           </select>
           ${!canTransferLeads() && !isNew ? '<div class="small-muted">🔒 Only Managers can reassign leads (UC69)</div>' : ""}
         </div>
-        <div class="field"><label>Domain / Branch <span class="pill">UC30</span></label><select id="f_domain">${DOMAINS.map(d => `<option ${L.domain === d ? "selected" : ""}>${d}</option>`).join("")}</select></div>
+        <div class="field"><label>Domain / Branch <span class="pill">UC30</span></label><select id="f_domain">${picklist('domains').map(d => `<option ${L.domain === d ? "selected" : ""}>${d}</option>`).join("")}</select></div>
       </div>
       <div class="checkbox-row"><input type="checkbox" id="f_isReferral" ${L.isReferral ? "checked" : ""}> <label style="margin:0">This is a Referral (Staff or Student)</label></div>
       <div class="field ${L.isReferral ? "" : "hidden"}" id="wrap_referralType"><label>Referral Type</label>
         <select id="f_referralType"><option value="Staff" ${L.referralType === "Staff" ? "selected" : ""}>Staff</option><option value="Student" ${L.referralType === "Student" ? "selected" : ""}>Student</option></select>
       </div>
-      ${!isNew && L.stage === "Closed" ? `<div class="field"><label>Loss Reason <span class="pill">UC77</span></label><select id="f_lossReason"><option value="">--</option>${LOSS_REASONS.map(r => `<option ${L.lossReason === r ? "selected" : ""}>${r}</option>`).join("")}</select></div>` : ""}
+      ${!isNew && L.stage === "Closed" ? `<div class="field"><label>Loss Reason <span class="pill">UC77</span></label><select id="f_lossReason"><option value="">--</option>${picklist('lossReasons').map(r => `<option ${L.lossReason === r ? "selected" : ""}>${r}</option>`).join("")}</select></div>` : ""}
       <div id="leadValidationNotice"></div>
     `;
     document.getElementById("f_source").onchange = e => {
@@ -823,8 +823,17 @@ function exportLeadTimelinePDF() {
   }
 }
 
+// UC60 — matching rules are admin-configurable (Admin → Fields & Picklists)
 function checkDuplicate(L) {
-  return DB.leads.find(x => x.id !== L.id && (x.mobile === L.mobile || (L.email && x.email === L.email)));
+  const r = DB.duplicateRules || { matchMobile: true, matchEmail: true, matchName: false };
+  const norm = s => String(s || "").trim().toLowerCase();
+  return DB.leads.find(x => {
+    if (x.id === L.id) return false;
+    if (r.matchMobile && L.mobile && norm(x.mobile) === norm(L.mobile)) return true;
+    if (r.matchEmail && L.email && norm(x.email) === norm(L.email)) return true;
+    if (r.matchName && L.name && norm(x.name) === norm(L.name)) return true;
+    return false;
+  });
 }
 
 function saveLeadModal() {
@@ -956,10 +965,10 @@ function renderPipeline(root) {
   root.innerHTML = `
     <div class="page-header">
       <div><h1>Master Pipeline</h1><div class="sub">Visual Kanban — drag cards between stages (UC61)</div></div>
-      <select id="pipelineProgramFilter" title="Program-wise pipeline summary (UC63)"><option value="">All Programs — UC63</option>${PROGRAMS.map(p => `<option ${state.pipelineFilter.program === p ? "selected" : ""}>${p}</option>`).join("")}</select>
+      <select id="pipelineProgramFilter" title="Program-wise pipeline summary (UC63)"><option value="">All Programs — UC63</option>${picklist('programs').map(p => `<option ${state.pipelineFilter.program === p ? "selected" : ""}>${p}</option>`).join("")}</select>
     </div>
     <div class="kanban" id="kanbanBoard"></div>
-    <div class="legend">${STAGES.map(s => `<span><i style="background:${stageColor(s)}"></i>${esc(stageLabel(s))}</span>`).join("")}</div>
+    <div class="legend">${stages().map(s => `<span><i style="background:${stageColor(s)}"></i>${esc(stageLabel(s))}</span>`).join("")}</div>
     <div class="card" style="margin-top:16px">
       <h3>Pipeline Summary Counts <span class="pill">UC62</span></h3>
       <div id="pipelineSummaryBars"></div>
@@ -974,14 +983,14 @@ function renderPipelineSummaryBars() {
   if (!el) return;
   let leads = visibleLeads().filter(l => !l.deactivated);
   if (state.pipelineFilter.program) leads = leads.filter(l => l.program === state.pipelineFilter.program);
-  el.innerHTML = simpleBarChart(STAGES.map(s => ({ label: stageLabel(s), value: leads.filter(l => l.stage === s).length, color: stageColor(s) })));
+  el.innerHTML = simpleBarChart(stages().map(s => ({ label: stageLabel(s), value: leads.filter(l => l.stage === s).length, color: stageColor(s) })));
 }
 function renderKanbanBoard() {
   const board = document.getElementById("kanbanBoard");
   let leads = visibleLeads().filter(l => !l.deactivated);
   if (state.pipelineFilter.program) leads = leads.filter(l => l.program === state.pipelineFilter.program);
 
-  board.innerHTML = STAGES.map(stage => {
+  board.innerHTML = stages().map(stage => {
     const stageLeads = leads.filter(l => l.stage === stage);
     return `<div class="kanban-col" data-stage="${stage}" ondragover="event.preventDefault();this.classList.add('dragover')" ondragleave="this.classList.remove('dragover')" ondrop="handleKanbanDrop(event,'${stage}')">
       <h4>${esc(stageLabel(stage))} <span>${stageLeads.length}</span></h4>
@@ -1099,7 +1108,7 @@ function escalateLead(leadId) {
 function quickFollowUp(leadId) {
   const lead = DB.leads.find(l => l.id === leadId);
   const wasDue = lead.nextFollowUp;
-  const next = completeFollowUp(lead, 5);
+  const next = completeFollowUp(lead, slaRules().followUpIntervalDays);
   const onTime = todayStr() <= wasDue;
   addActivity(lead, "Follow-Up", `Follow-up completed (due ${wasDue}, ${onTime ? "on time" : "late"}) — next scheduled ${next} (UC31)`);
   logAudit("FOLLOWUP", "Lead:" + leadId, `Completed (due ${wasDue}, ${onTime ? "on time" : "LATE"}), next due ${next}`);
@@ -1175,7 +1184,7 @@ function openNewInquiryModal() {
       <div class="field"><label class="required">Name</label><input id="inq_name"></div>
       <div class="field"><label class="required">Mobile</label><input id="inq_mobile"></div>
       <div class="field"><label>Email</label><input id="inq_email"></div>
-      <div class="field"><label>Interested Program</label><select id="inq_program">${PROGRAMS.map(p => `<option>${p}</option>`).join("")}</select></div>
+      <div class="field"><label>Interested Program</label><select id="inq_program">${picklist('programs').map(p => `<option>${p}</option>`).join("")}</select></div>
       <div class="field"><label>Source</label><select id="inq_source"><option>Exhibition</option><option>Website</option><option>Walk-in</option><option>Referral</option></select></div>
     </div>
     <div class="modal-footer"><button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" onclick="saveNewInquiry()">Save</button></div>
@@ -1204,7 +1213,7 @@ function convertInquiry(id) {
     university: "", program: inq.program, district: "Other", examType: "Local A/L", resultsPending: true,
     olResult: "", alResult: "", languageTest: "None", languageScore: "", stage: "Open", deactivated: false,
     deactivationReason: "", lossReason: "", assignedTo: rand(DB.users.filter(u => u.role === "Counsellor").map(u => u.id)),
-    intakeId: "", domain: rand(DOMAINS), isReferral: false, referralType: "", agentId: "",
+    intakeId: "", domain: rand(picklist('domains')), isReferral: false, referralType: "", agentId: "",
     checklist: makeChecklist(), commissionStatus: "Pending", tuitionFee: 850000, amountPaid: 0, outstandingBalance: 0, nextFollowUp: addDaysStr(todayStr(), 1), followUpLog: [], escalated: false,
     createdAt: new Date().toISOString(), activity: [{ ts: new Date().toISOString(), user: getCurrentUser().name, type: "Convert", text: "Converted from Inquiry" }]
   };
@@ -1357,7 +1366,7 @@ function openGenerateReportModal() {
     <div class="modal-header"><h2>Generate Commission Report <span class="pill">UC13</span></h2><button class="close-x" onclick="closeModal()">&times;</button></div>
     <div class="modal-body">
       <p class="small-muted">Optional filters — leave blank to include all converted leads.</p>
-      <div class="field"><label>Program</label><select id="genRep_program"><option value="">All Programs</option>${PROGRAMS.map(p => `<option>${p}</option>`).join("")}</select></div>
+      <div class="field"><label>Program</label><select id="genRep_program"><option value="">All Programs</option>${picklist('programs').map(p => `<option>${p}</option>`).join("")}</select></div>
       <div class="grid-2"><div class="field"><label>From Date</label><input id="genRep_from" type="date"></div><div class="field"><label>To Date</label><input id="genRep_to" type="date"></div></div>
     </div>
     <div class="modal-footer"><button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" onclick="generateCommissionReport({program:document.getElementById('genRep_program').value, from:document.getElementById('genRep_from').value, to:document.getElementById('genRep_to').value})">Generate &amp; Submit</button></div>
@@ -1606,12 +1615,12 @@ function markPaid(id) {
 function openCommissionPlanModal(planId) {
   const editing = planId ? DB.commissionPlans.find(p => p.id === planId) : null;
   window.__editingPlanId = editing ? editing.id : null;
-  const p = editing || { university: UNIVERSITIES[0], type: "Percentage", value: "", from: "", to: "" };
+  const p = editing || { university: picklist('universities')[0], type: "Percentage", value: "", from: "", to: "" };
   const isSlab = p.type === "Slab";
   openModal(`
     <div class="modal-header"><h2>${editing ? "Edit Commission Plan" : "New Commission Plan"} <span class="pill">UC1 / UC2 / UC4 / UC5</span></h2><button class="close-x" onclick="closeModal()">&times;</button></div>
     <div class="modal-body">
-      <div class="field"><label>University</label><select id="cp_uni">${UNIVERSITIES.map(u => `<option ${p.university === u ? "selected" : ""}>${u}</option>`).join("")}<option value="All" ${p.university === "All" ? "selected" : ""}>All (referral plans)</option></select></div>
+      <div class="field"><label>University</label><select id="cp_uni">${picklist('universities').map(u => `<option ${p.university === u ? "selected" : ""}>${u}</option>`).join("")}<option value="All" ${p.university === "All" ? "selected" : ""}>All (referral plans)</option></select></div>
       <div class="field"><label>Type</label>
         <select id="cp_type">
           <option value="Percentage" ${p.type === "Percentage" ? "selected" : ""}>Percentage</option>
@@ -1722,11 +1731,11 @@ function renderReportBody() {
   const tab = state.reportsTab;
 
   if (tab === "status") {
-    const counts = STAGES.map(s => ({ label: stageLabel(s), value: leads.filter(l => l.stage === s && !l.deactivated).length, color: stageColor(s) }));
+    const counts = stages().map(s => ({ label: stageLabel(s), value: leads.filter(l => l.stage === s && !l.deactivated).length, color: stageColor(s) }));
     body.innerHTML = `<div class="card"><h3>Lead Status Distribution (UC45)</h3>${simpleBarChart(counts)}</div>`;
   }
   if (tab === "source") {
-    const bySource = LEAD_SOURCES.map(s => {
+    const bySource = picklist('leadSources').map(s => {
       const l = leads.filter(x => x.leadSource === s);
       const conv = l.filter(x => x.stage === "Converted").length;
       return { label: s, value: l.length, conv, rate: l.length ? ((conv / l.length) * 100).toFixed(0) : 0 };
@@ -1736,7 +1745,7 @@ function renderReportBody() {
       <tbody>${bySource.map(s => `<tr><td>${s.label}</td><td>${s.value}</td><td>${s.conv}</td><td>${s.rate}%</td></tr>`).join("")}</tbody></table></div>`;
   }
   if (tab === "university") {
-    const byUni = UNIVERSITIES.map(u => ({ label: u, value: leads.filter(l => l.university === u).length }));
+    const byUni = picklist('universities').map(u => ({ label: u, value: leads.filter(l => l.university === u).length }));
     body.innerHTML = `<div class="card"><h3>University-Wise Lead Distribution (UC48)</h3>${simpleBarChart(byUni)}</div>`;
   }
   if (tab === "funnel") {
@@ -1750,7 +1759,7 @@ function renderReportBody() {
   }
   if (tab === "loss") {
     const lost = leads.filter(l => l.stage === "Closed" && l.lossReason);
-    const segs = LOSS_REASONS.map((r, idx) => ({ label: r, value: lost.filter(l => l.lossReason === r).length, color: ["#2563eb", "#e0821e", "#1c8a4c", "#d64545", "#7c3aed", "#c2185b"][idx % 6] })).filter(s => s.value > 0);
+    const segs = picklist('lossReasons').map((r, idx) => ({ label: r, value: lost.filter(l => l.lossReason === r).length, color: ["#2563eb", "#e0821e", "#1c8a4c", "#d64545", "#7c3aed", "#c2185b"][idx % 6] })).filter(s => s.value > 0);
     body.innerHTML = `<div class="card"><h3>Loss Reason Analysis (UC77)</h3>
       <div style="display:flex;gap:24px;align-items:center;flex-wrap:wrap;">
         ${donutSVG(segs.length ? segs : [{ label: "None", value: 1, color: "#e2e6ec" }], 180)}
@@ -1758,7 +1767,7 @@ function renderReportBody() {
       </div></div>`;
   }
   if (tab === "program") {
-    const byProg = PROGRAMS.map(p => {
+    const byProg = picklist('programs').map(p => {
       const l = leads.filter(x => x.program === p);
       return { label: p, value: l.length, enrolled: l.filter(x => x.stage === "Converted").length };
     });
@@ -1818,16 +1827,16 @@ function currentReportData() {
   const def = REPORT_DEFS.find(r => r.id === tab) || { label: tab };
 
   if (tab === "status") {
-    return { title: def.label, rows: [["Stage", "Leads"], ...STAGES.map(s => [stageLabel(s), leads.filter(l => l.stage === s && !l.deactivated).length])] };
+    return { title: def.label, rows: [["Stage", "Leads"], ...stages().map(s => [stageLabel(s), leads.filter(l => l.stage === s && !l.deactivated).length])] };
   }
   if (tab === "source") {
-    return { title: def.label, rows: [["Source", "Leads", "Converted", "Conversion %"], ...LEAD_SOURCES.map(s => {
+    return { title: def.label, rows: [["Source", "Leads", "Converted", "Conversion %"], ...picklist('leadSources').map(s => {
       const l = leads.filter(x => x.leadSource === s), c = l.filter(x => x.stage === "Converted").length;
       return [s, l.length, c, (l.length ? Math.round(c / l.length * 100) : 0) + "%"];
     })] };
   }
   if (tab === "university") {
-    return { title: def.label, rows: [["University", "Leads", "Converted"], ...UNIVERSITIES.map(u => {
+    return { title: def.label, rows: [["University", "Leads", "Converted"], ...picklist('universities').map(u => {
       const l = leads.filter(x => x.university === u);
       return [u, l.length, l.filter(x => x.stage === "Converted").length];
     })] };
@@ -1843,13 +1852,13 @@ function currentReportData() {
   }
   if (tab === "loss") {
     const lost = leads.filter(l => l.stage === "Closed" && l.lossReason);
-    return { title: def.label, rows: [["Loss Reason", "Leads", "% of lost"], ...LOSS_REASONS.map(r => {
+    return { title: def.label, rows: [["Loss Reason", "Leads", "% of lost"], ...picklist('lossReasons').map(r => {
       const n = lost.filter(l => l.lossReason === r).length;
       return [r, n, (lost.length ? Math.round(n / lost.length * 100) : 0) + "%"];
     })] };
   }
   if (tab === "program") {
-    return { title: def.label, rows: [["Program", "Leads", "Enrolled", "Conversion %"], ...PROGRAMS.map(p => {
+    return { title: def.label, rows: [["Program", "Leads", "Enrolled", "Conversion %"], ...picklist('programs').map(p => {
       const l = leads.filter(x => x.program === p), e = l.filter(x => x.stage === "Converted").length;
       return [p, l.length, e, (l.length ? Math.round(e / l.length * 100) : 0) + "%"];
     })] };
@@ -1955,7 +1964,7 @@ function saveNewIntake() {
       return;
     }
   }
-  DB.intakes.push({ id: uid("in"), name, start, end, programs: PROGRAMS });
+  DB.intakes.push({ id: uid("in"), name, start, end, programs: picklist('programs') });
   logAudit("CREATE", "Intake", name);
   saveDB();
   closeModal();
@@ -1990,7 +1999,7 @@ function openAgentSubmitModal(agentId) {
       <div class="field"><label class="required">Name</label><input id="ag_name"></div>
       <div class="field"><label class="required">Mobile</label><input id="ag_mobile"></div>
       <div class="field"><label>Email</label><input id="ag_email"></div>
-      <div class="field"><label>Program</label><select id="ag_program">${PROGRAMS.map(p => `<option>${p}</option>`).join("")}</select></div>
+      <div class="field"><label>Program</label><select id="ag_program">${picklist('programs').map(p => `<option>${p}</option>`).join("")}</select></div>
     </div>
     <div class="modal-footer"><button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" onclick="saveAgentLead('${agentId}')">Submit</button></div>
   `);
@@ -2004,7 +2013,7 @@ function saveAgentLead(agentId) {
     studentId: "", staffName: "", university: "", program: document.getElementById("ag_program").value, district: "Other",
     examType: "Local A/L", resultsPending: true, olResult: "", alResult: "", languageTest: "None", languageScore: "",
     stage: "Open", deactivated: false, deactivationReason: "", lossReason: "", assignedTo: rand(DB.users.filter(u => u.role === "Counsellor").map(u => u.id)),
-    intakeId: "", domain: rand(DOMAINS), isReferral: true, referralType: "Student", agentId,
+    intakeId: "", domain: rand(picklist('domains')), isReferral: true, referralType: "Student", agentId,
     checklist: makeChecklist(), commissionStatus: "Pending", tuitionFee: 850000, amountPaid: 0, outstandingBalance: 0, nextFollowUp: addDaysStr(todayStr(), 1), followUpLog: [], escalated: false,
     createdAt: new Date().toISOString(), activity: [{ ts: new Date().toISOString(), user: "Agent Portal", type: "Create", text: "Lead submitted via Agent Portal" }]
   });
@@ -2100,46 +2109,167 @@ function exportAuditPDF() {
 /* ============================================================
    ADMIN SETTINGS
    ============================================================ */
-function renderAdmin(root) {
-  root.innerHTML = `
-    <div class="page-header"><div><h1>Admin Settings</h1><div class="sub">Configure roles, stages, statuses & mandatory fields</div></div></div>
+const ADMIN_TABS = [
+  ["pipeline", "Pipeline & Stages"],
+  ["fields", "Fields & Picklists"],
+  ["roles", "Roles & Users"],
+  ["automation", "Automation & SLA"],
+  ["commission", "Commission Rules"]
+];
 
+function renderAdmin(root) {
+  const isAdmin = currentRole() === "Admin";
+  state.adminTab = state.adminTab || "pipeline";
+  root.innerHTML = `
+    <div class="page-header">
+      <div><h1>Admin Settings</h1><div class="sub">Runtime configuration — no code changes required. ${isAdmin ? "" : "🔒 Read-only for " + esc(currentRole()) + "."}</div></div>
+      ${isAdmin ? `<button class="btn secondary sm" onclick="exportConfigJSON()">⬇ Export Config</button>` : ""}
+    </div>
+    <div class="tabs">${ADMIN_TABS.map(([k, l]) => `<div class="tab ${state.adminTab === k ? "active" : ""}" data-k="${k}">${l}</div>`).join("")}</div>
+    <div id="adminBody"></div>
+  `;
+  document.querySelectorAll(".tabs .tab").forEach(t => t.onclick = () => { state.adminTab = t.dataset.k; renderAdmin(root); });
+  renderAdminBody();
+}
+
+function exportConfigJSON() {
+  const cfg = {
+    statusLabels: DB.statusLabels, statusColors: DB.statusColors, transitionRules: DB.transitionRules,
+    mandatoryFields: DB.mandatoryFields, checklistTemplate: DB.checklistTemplate,
+    picklists: DB.picklists, duplicateRules: DB.duplicateRules, slaRules: DB.slaRules,
+    rolePermissions: DB.rolePermissions, commissionRules: DB.commissionRules,
+    deactivationMinDays: DB.deactivationMinDays, reportConfig: DB.reportConfig,
+    scheduledReportEnabled: DB.scheduledReportEnabled
+  };
+  const blob = new Blob([JSON.stringify(cfg, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "uniconnect-config.json";
+  a.click();
+  logAudit("EXPORT", "Configuration", "Full admin configuration exported as JSON");
+  saveDB();
+  toast("Configuration exported.", "success");
+}
+
+function renderAdminBody() {
+  const body = document.getElementById("adminBody");
+  if (!body) return;
+  const isAdmin = currentRole() === "Admin";
+  const tab = state.adminTab;
+  const lock = isAdmin ? "" : "disabled";
+  const lockNote = isAdmin ? "" : "<p class='small-muted' style='margin-top:8px'>🔒 Only Admins can edit this.</p>";
+
+  if (tab === "pipeline") body.innerHTML = adminPipelineHTML(lock, lockNote, isAdmin);
+  if (tab === "fields") body.innerHTML = adminFieldsHTML(lock, lockNote, isAdmin);
+  if (tab === "roles") body.innerHTML = adminRolesHTML(lock, lockNote, isAdmin);
+  if (tab === "automation") body.innerHTML = adminAutomationHTML(lock, lockNote, isAdmin);
+  if (tab === "commission") body.innerHTML = adminCommissionHTML(lock, lockNote, isAdmin);
+
+  const roleSel = document.getElementById("permRoleSelect");
+  if (roleSel) {
+    state.permRole = state.permRole || roleSel.value;
+    roleSel.value = state.permRole;
+    roleSel.onchange = e => { state.permRole = e.target.value; renderPermEditor(); };
+    renderPermEditor();
+  }
+}
+
+function adminPipelineHTML(lock, lockNote, isAdmin) {
+  const list = stages();
+  return `
     <div class="card">
-      <h3>Status Labels &amp; Colours <span class="pill">UC64</span></h3>
-      <p class="small-muted">Rename any stage's display label or recolour it — applied instantly across tabs, Kanban, dashboard widgets and reports.</p>
-      <div class="table-wrap"><table><thead><tr><th>Internal Stage</th><th>Display Label</th><th>Colour</th></tr></thead>
-      <tbody>${STAGES.map(s => `<tr>
-        <td>${s}</td>
-        <td><input type="text" class="statusLabelInput" data-stage="${s}" value="${esc(stageLabel(s))}" ${currentRole() === "Admin" ? "" : "disabled"}></td>
-        <td><input type="color" class="statusColorInput" data-stage="${s}" value="${stageColor(s)}" style="width:56px;padding:2px" ${currentRole() === "Admin" ? "" : "disabled"}></td>
+      <h3>Pipeline Stages <span class="pill">UC64</span></h3>
+      <p class="small-muted">Add your own stages, rename them, recolour them or change their order. The four built-in stages carry engine behaviour (Converted fires the conversion automation and commission records; Closed drives loss analysis), so they can be reordered and renamed but not removed.</p>
+      <div class="table-wrap"><table><thead><tr><th style="width:70px">Order</th><th>Display Label</th><th style="width:90px">Colour</th><th style="width:90px">Leads</th><th>Type</th><th style="width:150px"></th></tr></thead>
+      <tbody>${list.map((s, i) => `<tr>
+        <td>
+          <button class="btn sm ghost" onclick="moveStage('${s}',-1)" ${i === 0 || !isAdmin ? "disabled" : ""} title="Move up">▲</button>
+          <button class="btn sm ghost" onclick="moveStage('${s}',1)" ${i === list.length - 1 || !isAdmin ? "disabled" : ""} title="Move down">▼</button>
+        </td>
+        <td><input type="text" class="stageLabelInput" data-stage="${s}" value="${esc(stageLabel(s))}" ${lock}></td>
+        <td><input type="color" class="stageColorInput" data-stage="${s}" value="${stageColor(s)}" style="width:56px;padding:2px" ${lock}></td>
+        <td>${leadsInStage(s)}</td>
+        <td>${isSystemStage(s) ? '<span class="badge open">Built-in</span>' : '<span class="badge closed">Custom</span>'}</td>
+        <td>${isSystemStage(s) || !isAdmin ? "" : `<button class="btn sm danger" onclick="deleteStage('${s}')">Delete</button>`}</td>
       </tr>`).join("")}</tbody></table></div>
-      ${currentRole() === "Admin" ? `<button class="btn sm" style="margin-top:10px" onclick="saveStatusLabels()">Save Labels &amp; Colours</button> <button class="btn sm secondary" onclick="resetStatusLabels()">Reset to Defaults</button>` : "<p class='small-muted' style='margin-top:8px'>🔒 Only Admins can edit status labels/colours.</p>"}
+      ${isAdmin ? `
+        <div class="toolbar" style="margin-top:14px;margin-bottom:0">
+          <input type="text" id="newStageName" placeholder="New stage name, e.g. Application Sent" style="min-width:280px">
+          <input type="color" id="newStageColor" value="${DEFAULT_STAGE_COLOR}" style="width:56px;padding:2px">
+          <button class="btn sm" onclick="addStage()">+ Add Stage</button>
+          <button class="btn sm secondary" onclick="saveStageLabels()">Save Labels &amp; Colours</button>
+          <button class="btn sm secondary" onclick="resetStages()">Reset Pipeline</button>
+        </div>` : lockNote}
     </div>
 
     <div class="card">
-      <h3>Full Status Set &amp; Transition Rules <span class="pill">UC38 / UC64</span></h3>
+      <h3>Stage Transition Rules <span class="pill">UC37 / UC38 / UC64</span></h3>
       <p class="small-muted">Tick which forward transitions are permitted from each stage. Unchecked = blocked in Pipeline, Kanban and the Lead form (like Qualified → Open, UC37).</p>
-      <div class="table-wrap"><table><thead><tr><th>From \\ To</th>${STAGES.map(s => `<th>${s}</th>`).join("")}</tr></thead>
-      <tbody>${STAGES.map(from => `<tr><td><b>${stageBadge(from)}</b></td>${STAGES.map(to => `
+      <div class="table-wrap"><table><thead><tr><th>From \\ To</th>${stages().map(s => `<th>${s}</th>`).join("")}</tr></thead>
+      <tbody>${stages().map(from => `<tr><td><b>${stageBadge(from)}</b></td>${stages().map(to => `
         <td style="text-align:center">${from === to ? "<span class='small-muted'>—</span>" : `<input type="checkbox" class="transitionChk" data-from="${from}" data-to="${to}" ${(DB.transitionRules[from] || []).includes(to) ? "checked" : ""} ${!["Admin"].includes(currentRole()) ? "disabled" : ""}>`}</td>`).join("")}</tr>`).join("")}</tbody></table></div>
       ${currentRole() === "Admin" ? `<button class="btn sm" style="margin-top:10px" onclick="saveTransitionRules()">Save Rules</button> <button class="btn sm secondary" onclick="resetTransitionRules()">Reset to Defaults</button>` : "<p class='small-muted' style='margin-top:8px'>🔒 Only Admins can edit these rules.</p>"}
     </div>
 
     <div class="card">
       <h3>Mandatory Fields per Stage <span class="pill">UC59</span></h3>
-      <table><thead><tr><th>Stage</th><th>Required Fields</th></tr></thead>
-      <tbody>${STAGES.map(s => `<tr><td>${stageBadge(s)}</td><td>${(STAGE_MANDATORY_FIELDS[s] || []).join(", ") || "None"}</td></tr>`).join("")}</tbody></table>
+      <p class="small-muted">Tick the fields a lead must have filled <b>before it may enter</b> each stage. Enforced in the lead form and on Kanban drag-and-drop. Academic result fields are auto-relaxed when "Results Pending" is set (UC56).</p>
+      <div class="table-wrap"><table><thead><tr><th>Field</th>${stages().map(s => `<th style="text-align:center">${esc(stageLabel(s))}</th>`).join("")}</tr></thead>
+      <tbody>${LEAD_FIELD_CATALOG.map(f => `<tr><td>${esc(f.label)}</td>${stages().map(s => `
+        <td style="text-align:center"><input type="checkbox" class="mandChk" data-stage="${s}" data-field="${f.id}" ${mandatoryFieldsFor(s).includes(f.id) ? "checked" : ""} ${lock}></td>`).join("")}</tr>`).join("")}</tbody></table></div>
+      ${isAdmin ? `<button class="btn sm" style="margin-top:10px" onclick="saveMandatoryFields()">Save Mandatory Fields</button> <button class="btn sm secondary" onclick="resetMandatoryFields()">Reset to Defaults</button>` : lockNote}
     </div>
 
     <div class="card">
-      <h3>Deactivation Criteria <span class="pill">UC41</span></h3>
-      <div class="field" style="max-width:280px"><label>Minimum lead age before deactivation is allowed (days)</label>
-        <input type="number" id="deactMinDays" value="${DB.deactivationMinDays}" min="0" ${currentRole() === "Admin" ? "" : "disabled"}>
+      <h3>Lead Qualification Checklist <span class="pill">UC54</span></h3>
+      <p class="small-muted">Items a counsellor must tick before a lead can advance. Applies to newly created leads; existing leads keep the checklist they were created with.</p>
+      <div id="checklistEditor">${(DB.checklistTemplate || []).map((item, i) => `
+        <div class="checkbox-row" style="margin-bottom:8px">
+          <input type="text" class="checklistItem" value="${esc(item)}" ${lock}>
+          ${isAdmin ? `<button class="btn sm ghost" onclick="removeChecklistItem(${i})" title="Remove">✕</button>` : ""}
+        </div>`).join("")}</div>
+      ${isAdmin ? `<button class="btn sm secondary" onclick="addChecklistItem()">+ Add Item</button> <button class="btn sm" onclick="saveChecklistTemplate()">Save Checklist</button>` : lockNote}
+    </div>
+  `;
+}
+
+function adminFieldsHTML(lock, lockNote, isAdmin) {
+  const lists = [
+    ["universities", "Universities", "UC28 / UC48"],
+    ["programs", "Programs", "UC63 / UC78"],
+    ["districts", "Districts", "UC58"],
+    ["domains", "Tenants / Domains", "UC30"],
+    ["leadSources", "Lead Sources", "UC21 / UC22 / UC47"],
+    ["digitalSubSources", "Digital Sub-Sources", "UC25"],
+    ["lossReasons", "Loss Reasons", "UC77"]
+  ];
+  return `
+    <div class="card">
+      <h3>Form Picklists <span class="pill">UC25 / UC30 / UC58</span></h3>
+      <p class="small-muted">One value per line. These drive every dropdown in the lead form, filters and reports. Removing a value already in use won't alter existing leads — they keep their stored value.</p>
+      <div class="grid-2">
+        ${lists.map(([key, label, uc]) => `
+          <div class="field">
+            <label>${esc(label)} <span class="pill">${uc}</span></label>
+            <textarea class="picklistBox" data-key="${key}" rows="${Math.max(4, picklist(key).length)}" ${lock}>${esc(picklist(key).join("\n"))}</textarea>
+          </div>`).join("")}
       </div>
-      ${currentRole() === "Admin" ? `<button class="btn sm" onclick="saveDeactivationCriteria()">Save</button>` : ""}
-      <p class="small-muted" style="margin-top:8px">Managers and above can override this criterion per lead (AF1).</p>
+      ${isAdmin ? `<button class="btn sm" onclick="savePicklists()">Save Picklists</button> <button class="btn sm secondary" onclick="resetPicklists()">Reset to Defaults</button>` : lockNote}
     </div>
 
+    <div class="card">
+      <h3>Duplicate Detection Rules <span class="pill">UC60</span></h3>
+      <p class="small-muted">Which fields are compared against existing leads when saving. If any ticked rule matches, the user is warned and may "Create Anyway" or abort.</p>
+      <div class="checkbox-row" style="margin-bottom:8px"><input type="checkbox" id="dupMobile" ${(DB.duplicateRules || {}).matchMobile ? "checked" : ""} ${lock}><label style="margin:0;text-transform:none">Match on <b>Mobile</b></label></div>
+      <div class="checkbox-row" style="margin-bottom:8px"><input type="checkbox" id="dupEmail" ${(DB.duplicateRules || {}).matchEmail ? "checked" : ""} ${lock}><label style="margin:0;text-transform:none">Match on <b>Email</b></label></div>
+      <div class="checkbox-row"><input type="checkbox" id="dupName" ${(DB.duplicateRules || {}).matchName ? "checked" : ""} ${lock}><label style="margin:0;text-transform:none">Match on <b>Full Name</b> (stricter — more false positives)</label></div>
+      ${isAdmin ? `<button class="btn sm" style="margin-top:12px" onclick="saveDuplicateRules()">Save Rules</button>` : lockNote}
+    </div>
+  `;
+}
+
+function adminRolesHTML(lock, lockNote, isAdmin) {
+  return `
     <div class="card">
       <h3>Role-Based Dashboard &amp; Report Visibility <span class="pill">UC49</span></h3>
       <p class="small-muted">Tick which dashboard widgets and reports each role can see, and whether they may view commission amounts. Changes apply immediately — switch role in the top bar to verify.</p>
@@ -2150,45 +2280,74 @@ function renderAdmin(root) {
     </div>
 
     <div class="card">
-      <h3>Commission Eligibility Rules <span class="pill">UC14 / UC15 / UC19</span></h3>
+      <h3>Users, Hierarchy &amp; Tenant Scope <span class="pill">UC26 / UC27 / UC30 / UC34</span></h3>
+      <p class="small-muted">Tenant scope partitions data <b>before</b> any role rule — a "Kandy Branch" user cannot see Colombo data regardless of role. "All" = global. Reporting line drives the escalation chain (UC34).</p>
+      <div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Reports To</th><th>Tenant / Domain</th></tr></thead>
+      <tbody>${DB.users.map(u => `<tr>
+        <td>${esc(u.name)}</td>
+        <td><select class="userRoleSel" data-uid="${u.id}" ${lock}>${ROLES.map(r => `<option ${u.role === r ? "selected" : ""}>${r}</option>`).join("")}</select></td>
+        <td><select class="userMgrSel" data-uid="${u.id}" ${lock}>
+          <option value="">— none —</option>
+          ${DB.users.filter(m => m.id !== u.id).map(m => `<option value="${m.id}" ${u.managerId === m.id ? "selected" : ""}>${esc(m.name)}</option>`).join("")}
+        </select></td>
+        <td><select class="userDomainSel" data-uid="${u.id}" ${lock}>
+          <option value="All" ${u.domain === "All" ? "selected" : ""}>All (global)</option>
+          ${picklist('domains').map(d => `<option ${u.domain === d ? "selected" : ""}>${d}</option>`).join("")}
+        </select></td></tr>`).join("")}</tbody></table></div>
+      ${isAdmin ? `<button class="btn sm" style="margin-top:12px" onclick="saveUsers()">Save Users</button>` : lockNote}
+    </div>
+  `;
+}
+
+function adminAutomationHTML(lock, lockNote, isAdmin) {
+  const sla = slaRules();
+  return `
+    <div class="card">
+      <h3>Follow-Up SLA &amp; Escalation <span class="pill">UC32 / UC33 / UC46</span></h3>
       <div class="grid-3">
-        <div class="field"><label>Payment Threshold (UC14)</label><input type="number" id="ruleThreshold" value="${(DB.commissionRules || {}).paymentThreshold || 0}" ${currentRole() === "Admin" ? "" : "disabled"}></div>
-        <div class="field"><label>Expiry / Claw-back Days (UC19)</label><input type="number" id="ruleExpiry" value="${(DB.commissionRules || {}).expiryDays || 25}" ${currentRole() === "Admin" ? "" : "disabled"}></div>
-        <div class="field"><label>&nbsp;</label>
-          <div class="checkbox-row"><input type="checkbox" id="ruleOutstanding" ${(DB.commissionRules || {}).requireZeroOutstanding ? "checked" : ""} ${currentRole() === "Admin" ? "" : "disabled"}><label style="margin:0;text-transform:none">Require zero outstanding for referrals (UC15)</label></div>
-        </div>
+        <div class="field"><label>First-contact window (days) — UC33</label><input type="number" min="0" id="slaFirst" value="${sla.firstContactDays}" ${lock}></div>
+        <div class="field"><label>Default follow-up interval (days)</label><input type="number" min="1" id="slaInterval" value="${sla.followUpIntervalDays}" ${lock}></div>
+        <div class="field"><label>Grace period before escalation (days) — UC32</label><input type="number" min="0" id="slaGrace" value="${sla.graceDays}" ${lock}></div>
       </div>
-      ${currentRole() === "Admin" ? `<button class="btn sm" onclick="saveCommissionRules()">Save Rules</button>` : ""}
+      <p class="small-muted">A new lead with no logged activity after the first-contact window is flagged (UC33). An overdue follow-up escalates once past its due date plus the grace period (UC32), then up the reporting line to the Head of Dept. (UC34).</p>
+      ${isAdmin ? `<button class="btn sm" onclick="saveSlaRules()">Save SLA Rules</button>` : lockNote}
     </div>
 
     <div class="card">
-      <h3>Users, Hierarchy &amp; Tenant Scope <span class="pill">UC26 / UC27 / UC30 / UC34</span></h3>
-      <p class="small-muted">Tenant scope partitions data before any role rule — a "Kandy Branch" user cannot see Colombo data regardless of role. "All" = global (unpartitioned).</p>
-      <table><thead><tr><th>Name</th><th>Role</th><th>Reports To</th><th>Tenant / Domain (UC30)</th></tr></thead>
-      <tbody>${DB.users.map(u => `<tr><td>${esc(u.name)}</td><td>${esc(u.role)}</td><td>${u.managerId ? esc(userName(u.managerId)) : "-"}</td>
-        <td><select class="userDomainSel" data-uid="${u.id}" ${currentRole() === "Admin" ? "" : "disabled"}>
-          <option value="All" ${u.domain === "All" ? "selected" : ""}>All (global)</option>
-          ${DOMAINS.map(d => `<option ${u.domain === d ? "selected" : ""}>${d}</option>`).join("")}
-        </select></td></tr>`).join("")}</tbody></table>
-      ${currentRole() === "Admin" ? `<button class="btn sm" style="margin-top:10px" onclick="saveUserDomains()">Save Tenant Scopes</button>` : ""}
+      <h3>Deactivation Criteria <span class="pill">UC41</span></h3>
+      <div class="field" style="max-width:320px"><label>Minimum lead age before deactivation (days)</label>
+        <input type="number" id="deactMinDays" value="${DB.deactivationMinDays}" min="0" ${lock}>
+      </div>
+      ${isAdmin ? `<button class="btn sm" onclick="saveDeactivationCriteria()">Save</button>` : lockNote}
+      <p class="small-muted" style="margin-top:8px">Managers and above can override this per lead (AF1). Bulk deactivation skips leads that fail the criterion.</p>
     </div>
 
     <div class="card">
       <h3>Report Schedule &amp; Recipients <span class="pill">UC10 / UC12</span></h3>
-      <div class="checkbox-row"><input type="checkbox" id="schedReportChk" ${DB.scheduledReportEnabled ? "checked" : ""} ${currentRole() === "Admin" ? "" : "disabled"}><label style="margin:0">Auto-generate commission report weekly (Friday 18:00)</label></div>
-      <div class="field" style="margin-top:10px"><label>Finance Recipients (comma separated)</label><input id="reportRecipients" value="${esc((DB.reportConfig.recipients || []).join(", "))}" ${currentRole() === "Admin" ? "" : "disabled"}></div>
-      <div class="field"><label>Report Columns (comma separated)</label><input id="reportColumns" value="${esc((DB.reportConfig.columns || []).join(", "))}" ${currentRole() === "Admin" ? "" : "disabled"}></div>
-      ${currentRole() === "Admin" ? `<button class="btn sm" onclick="saveReportConfig()">Save Settings</button> <button class="btn sm secondary" onclick="runScheduledReportJob()" title="UC10">▶ Run Scheduled Job Now</button>` : ""}
+      <div class="checkbox-row"><input type="checkbox" id="schedReportChk" ${DB.scheduledReportEnabled ? "checked" : ""} ${lock}><label style="margin:0;text-transform:none">Auto-generate commission report weekly (Friday 18:00)</label></div>
+      <div class="field" style="margin-top:12px"><label>Finance Recipients (comma separated)</label><input id="reportRecipients" value="${esc((DB.reportConfig.recipients || []).join(", "))}" ${lock}></div>
+      <div class="field"><label>Report Columns (comma separated)</label><input id="reportColumns" value="${esc((DB.reportConfig.columns || []).join(", "))}" ${lock}></div>
+      <p class="small-muted">Recognised columns: Student Name, University, Program, Commission Amount, Commission %, Status, Email, Mobile, Intake, Counsellor, Amount Paid, Outstanding.</p>
+      ${isAdmin ? `<button class="btn sm" onclick="saveReportConfig()">Save Settings</button> <button class="btn sm secondary" onclick="runScheduledReportJob()" title="UC10">▶ Run Scheduled Job Now</button>` : lockNote}
     </div>
   `;
+}
 
-  const roleSel = document.getElementById("permRoleSelect");
-  if (roleSel) {
-    state.permRole = state.permRole || roleSel.value;
-    roleSel.value = state.permRole;
-    roleSel.onchange = e => { state.permRole = e.target.value; renderPermEditor(); };
-    renderPermEditor();
-  }
+function adminCommissionHTML(lock, lockNote, isAdmin) {
+  return `
+    <div class="card">
+      <h3>Commission Eligibility Rules <span class="pill">UC14 / UC15 / UC19</span></h3>
+      <div class="grid-3">
+        <div class="field"><label>Payment Threshold (UC14)</label><input type="number" id="ruleThreshold" value="${(DB.commissionRules || {}).paymentThreshold || 0}" ${lock}></div>
+        <div class="field"><label>Expiry / Claw-back Days (UC19)</label><input type="number" id="ruleExpiry" value="${(DB.commissionRules || {}).expiryDays || 25}" ${lock}></div>
+        <div class="field"><label>&nbsp;</label>
+          <div class="checkbox-row"><input type="checkbox" id="ruleOutstanding" ${(DB.commissionRules || {}).requireZeroOutstanding ? "checked" : ""} ${lock}><label style="margin:0;text-transform:none">Require zero outstanding (UC15)</label></div>
+        </div>
+      </div>
+      <p class="small-muted">A converted lead becomes <b>Eligible</b> only when it clears every ticked rule; otherwise it is <b>Blocked</b>. Use “Re-validate All” on the Commission page to re-apply after changing these.</p>
+      ${isAdmin ? `<button class="btn sm" onclick="saveCommissionRules()">Save Rules</button>` : lockNote}
+    </div>
+  `;
 }
 
 function renderPermEditor() {
@@ -2225,17 +2384,118 @@ function saveRolePermissions() {
   saveDB();
   toast(`Permissions saved for ${role}.`, "success");
 }
-function saveUserDomains() {
+function saveUsers() {
+  let changes = 0;
   document.querySelectorAll(".userDomainSel").forEach(sel => {
     const u = DB.users.find(x => x.id === sel.dataset.uid);
-    if (u && u.domain !== sel.value) {
-      logAudit("UPDATE", "User:" + u.id, `Tenant scope ${u.domain} → ${sel.value} (UC30)`);
-      u.domain = sel.value;
-    }
+    if (u && u.domain !== sel.value) { logAudit("UPDATE", "User:" + u.id, `Tenant ${u.domain} → ${sel.value} (UC30)`); u.domain = sel.value; changes++; }
+  });
+  document.querySelectorAll(".userRoleSel").forEach(sel => {
+    const u = DB.users.find(x => x.id === sel.dataset.uid);
+    if (u && u.role !== sel.value) { logAudit("UPDATE", "User:" + u.id, `Role ${u.role} → ${sel.value}`); u.role = sel.value; changes++; }
+  });
+  document.querySelectorAll(".userMgrSel").forEach(sel => {
+    const u = DB.users.find(x => x.id === sel.dataset.uid);
+    const val = sel.value || null;
+    if (u && u.managerId !== val) { logAudit("UPDATE", "User:" + u.id, `Reports-to ${userName(u.managerId)} → ${val ? userName(val) : "none"} (UC34)`); u.managerId = val; changes++; }
   });
   saveDB();
-  toast("Tenant scopes saved — switch user in the top bar to verify partitioning.", "success");
+  toast(changes ? `${changes} user change(s) saved.` : "No changes.", "success");
   router();
+}
+
+/* ---- UC59: mandatory fields per stage ---- */
+function saveMandatoryFields() {
+  const rules = {};
+  stages().forEach(s => rules[s] = []);
+  document.querySelectorAll(".mandChk:checked").forEach(chk => rules[chk.dataset.stage].push(chk.dataset.field));
+  DB.mandatoryFields = rules;
+  logAudit("UPDATE", "MandatoryFields", stages().map(s => `${s}: ${rules[s].join("/") || "none"}`).join(" | "));
+  saveDB();
+  toast("Mandatory field rules saved (UC59).", "success");
+}
+function resetMandatoryFields() {
+  DB.mandatoryFields = JSON.parse(JSON.stringify(STAGE_MANDATORY_FIELDS));
+  logAudit("RESET", "MandatoryFields", "Reset to defaults");
+  saveDB();
+  toast("Mandatory fields reset.", "success");
+  renderAdminBody();
+}
+
+/* ---- UC54: qualification checklist ---- */
+function collectChecklistInputs() {
+  return Array.from(document.querySelectorAll(".checklistItem")).map(i => i.value.trim()).filter(Boolean);
+}
+function addChecklistItem() {
+  DB.checklistTemplate = collectChecklistInputs().concat("New checklist item");
+  saveDB();
+  renderAdminBody();
+}
+function removeChecklistItem(idx) {
+  const items = collectChecklistInputs();
+  items.splice(idx, 1);
+  DB.checklistTemplate = items;
+  saveDB();
+  renderAdminBody();
+}
+function saveChecklistTemplate() {
+  const items = collectChecklistInputs();
+  if (!items.length) { toast("Keep at least one checklist item.", "error"); return; }
+  DB.checklistTemplate = items;
+  logAudit("UPDATE", "ChecklistTemplate", `${items.length} item(s): ${items.join(" / ")}`);
+  saveDB();
+  toast("Qualification checklist saved (UC54).", "success");
+  renderAdminBody();
+}
+
+/* ---- UC25 / UC30 / UC58: picklists ---- */
+function savePicklists() {
+  DB.picklists = DB.picklists || {};
+  let empties = [];
+  document.querySelectorAll(".picklistBox").forEach(box => {
+    const vals = box.value.split(/\r?\n/).map(v => v.trim()).filter(Boolean);
+    if (!vals.length) { empties.push(box.dataset.key); return; }
+    DB.picklists[box.dataset.key] = vals;
+  });
+  logAudit("UPDATE", "Picklists", Object.keys(DB.picklists).map(k => `${k}:${DB.picklists[k].length}`).join(", "));
+  saveDB();
+  toast(empties.length ? `Saved — ${empties.join(", ")} left unchanged (cannot be empty).` : "Picklists saved.", empties.length ? "warn" : "success");
+  renderAdminBody();
+}
+function resetPicklists() {
+  DB.picklists = {
+    universities: UNIVERSITIES.slice(), programs: PROGRAMS.slice(), districts: DISTRICTS.slice(),
+    domains: DOMAINS.slice(), leadSources: LEAD_SOURCES.slice(),
+    digitalSubSources: DIGITAL_SUBSOURCES.slice(), lossReasons: LOSS_REASONS.slice()
+  };
+  logAudit("RESET", "Picklists", "Reset to defaults");
+  saveDB();
+  toast("Picklists reset to defaults.", "success");
+  renderAdminBody();
+}
+
+/* ---- UC60: duplicate detection ---- */
+function saveDuplicateRules() {
+  DB.duplicateRules = {
+    matchMobile: document.getElementById("dupMobile").checked,
+    matchEmail: document.getElementById("dupEmail").checked,
+    matchName: document.getElementById("dupName").checked
+  };
+  logAudit("UPDATE", "DuplicateRules", JSON.stringify(DB.duplicateRules));
+  saveDB();
+  toast("Duplicate detection rules saved (UC60).", "success");
+}
+
+/* ---- UC32 / UC33: SLA timings ---- */
+function saveSlaRules() {
+  DB.slaRules = {
+    firstContactDays: Math.max(0, Number(document.getElementById("slaFirst").value || 1)),
+    followUpIntervalDays: Math.max(1, Number(document.getElementById("slaInterval").value || 5)),
+    graceDays: Math.max(0, Number(document.getElementById("slaGrace").value || 1))
+  };
+  logAudit("UPDATE", "SLARules", JSON.stringify(DB.slaRules));
+  saveDB();
+  toast("SLA & escalation rules saved.", "success");
 }
 function saveCommissionRules() {
   DB.commissionRules = DB.commissionRules || {};
@@ -2246,31 +2506,107 @@ function saveCommissionRules() {
   saveDB();
   toast("Commission eligibility rules saved. Use 'Re-validate All' to apply.", "success");
 }
-function saveStatusLabels() {
-  DB.statusLabels = DB.statusLabels || {};
-  DB.statusColors = DB.statusColors || {};
-  document.querySelectorAll(".statusLabelInput").forEach(inp => {
+/* ---- UC64: pipeline stage management ---- */
+function addStage() {
+  const nameEl = document.getElementById("newStageName");
+  const label = nameEl.value.trim();
+  if (!label) { toast("Enter a stage name.", "error"); return; }
+  const existing = stages();
+  if (existing.some(s => stageLabel(s).toLowerCase() === label.toLowerCase())) {
+    toast("A stage with that name already exists.", "error"); return;
+  }
+  const key = stageKeyFrom(label, existing);
+  // Insert before the terminal "Closed" stage if it's last, otherwise append.
+  const closedIdx = existing.indexOf("Closed");
+  const insertAt = closedIdx === existing.length - 1 && closedIdx > 0 ? closedIdx : existing.length;
+
+  DB.stages = existing.slice(0, insertAt).concat(key, existing.slice(insertAt));
+  DB.statusLabels[key] = label;
+  DB.statusColors[key] = document.getElementById("newStageColor").value || DEFAULT_STAGE_COLOR;
+  DB.mandatoryFields[key] = []; // nothing mandatory until configured
+  // Splice it into the flow: the new stage inherits the outbound moves of the stage
+  // before it, and that stage now advances into the new one instead.
+  const prev = DB.stages[DB.stages.indexOf(key) - 1];
+  DB.transitionRules[key] = prev ? (DB.transitionRules[prev] || []).slice() : [];
+  if (prev) DB.transitionRules[prev] = [key];
+  logAudit("CREATE", "Stage:" + key, `Stage "${label}" added to pipeline (UC64)`);
+  saveDB();
+  nameEl.value = "";
+  toast(`Stage "${label}" added before the terminal stage — use ▲▼ to reposition it.`, "success");
+  renderAdminBody();
+}
+
+function deleteStage(key) {
+  if (isSystemStage(key)) { toast("Built-in stages cannot be deleted.", "error"); return; }
+  const inUse = leadsInStage(key);
+  // UC64 - AF1: a status in use must have its leads reassigned first
+  if (inUse) {
+    toast(`Cannot delete — ${inUse} lead(s) are still in "${stageLabel(key)}". Move them first (UC64 - AF1).`, "error");
+    return;
+  }
+  if (!confirm(`Delete the stage "${stageLabel(key)}"? This cannot be undone.`)) return;
+  DB.stages = stages().filter(s => s !== key);
+  delete DB.statusLabels[key];
+  delete DB.statusColors[key];
+  delete DB.transitionRules[key];
+  delete DB.mandatoryFields[key];
+  // Drop any inbound transitions pointing at the removed stage
+  Object.keys(DB.transitionRules).forEach(from => {
+    DB.transitionRules[from] = (DB.transitionRules[from] || []).filter(t => t !== key);
+  });
+  logAudit("DELETE", "Stage:" + key, `Stage removed from pipeline (UC64)`);
+  saveDB();
+  toast("Stage deleted.", "success");
+  renderAdminBody();
+}
+
+function moveStage(key, dir) {
+  const list = stages().slice();
+  const i = list.indexOf(key);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= list.length) return;
+  list[i] = list[j]; list[j] = key;
+  DB.stages = list;
+  logAudit("UPDATE", "Stage:" + key, `Reordered to position ${j + 1} (UC64)`);
+  saveDB();
+  renderAdminBody();
+}
+
+function saveStageLabels() {
+  document.querySelectorAll(".stageLabelInput").forEach(inp => {
     DB.statusLabels[inp.dataset.stage] = inp.value.trim() || inp.dataset.stage;
   });
-  document.querySelectorAll(".statusColorInput").forEach(inp => {
+  document.querySelectorAll(".stageColorInput").forEach(inp => {
     DB.statusColors[inp.dataset.stage] = inp.value;
   });
-  logAudit("UPDATE", "StatusLabels", "Status labels/colours updated (UC64)");
+  logAudit("UPDATE", "Stages", "Stage labels/colours updated (UC64)");
   saveDB();
-  toast("Status labels & colours updated.", "success");
-  renderAdmin(document.getElementById("content"));
+  toast("Stage labels & colours saved.", "success");
+  renderAdminBody();
 }
-function resetStatusLabels() {
+
+function resetStages() {
+  const custom = stages().filter(s => !isSystemStage(s));
+  const blocked = custom.filter(s => leadsInStage(s) > 0);
+  if (blocked.length) {
+    toast(`Cannot reset — leads still sit in: ${blocked.map(stageLabel).join(", ")} (UC64 - AF1).`, "error");
+    return;
+  }
+  if (!confirm("Reset the pipeline to the four built-in stages? Custom stages will be removed.")) return;
+  DB.stages = STAGES.slice();
   DB.statusLabels = STAGES.reduce((m, s) => (m[s] = s, m), {});
   DB.statusColors = Object.assign({}, STAGE_COLORS);
-  logAudit("RESET", "StatusLabels", "Reset to defaults");
+  DB.transitionRules = JSON.parse(JSON.stringify(STAGE_TRANSITIONS));
+  DB.mandatoryFields = JSON.parse(JSON.stringify(STAGE_MANDATORY_FIELDS));
+  logAudit("RESET", "Stages", "Pipeline reset to built-in stages");
   saveDB();
-  toast("Status labels & colours reset.", "success");
-  renderAdmin(document.getElementById("content"));
+  toast("Pipeline reset to defaults.", "success");
+  renderAdminBody();
 }
+
 function saveTransitionRules() {
   const rules = {};
-  STAGES.forEach(s => rules[s] = []);
+  stages().forEach(s => rules[s] = []);
   document.querySelectorAll(".transitionChk").forEach(chk => {
     if (chk.checked) rules[chk.dataset.from].push(chk.dataset.to);
   });

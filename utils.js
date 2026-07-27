@@ -123,11 +123,22 @@ function userName(id) {
   return u ? u.name : "Unassigned";
 }
 
+/* ---------------- Configurable stage set (UC64) ---------------- */
+function stages() {
+  const s = DB && DB.stages;
+  return (Array.isArray(s) && s.length) ? s : STAGES;
+}
+function isSystemStage(stage) {
+  return SYSTEM_STAGES.includes(stage);
+}
+function leadsInStage(stage) {
+  return DB.leads.filter(l => l.stage === stage).length;
+}
 function stageLabel(stage) {
   return (DB.statusLabels && DB.statusLabels[stage]) || stage;
 }
 function stageColor(stage) {
-  return (DB.statusColors && DB.statusColors[stage]) || STAGE_COLORS[stage];
+  return (DB.statusColors && DB.statusColors[stage]) || STAGE_COLORS[stage] || DEFAULT_STAGE_COLOR;
 }
 function stageBadge(stage) {
   const label = esc(stageLabel(stage));
@@ -142,6 +153,34 @@ function commissionBadge(status) {
 function addActivity(lead, type, text) {
   lead.activity = lead.activity || [];
   lead.activity.unshift({ ts: new Date().toISOString(), user: getCurrentUser() ? getCurrentUser().name : "System", type, text });
+}
+
+/* ---------------- Admin-configurable picklists (UC25 / UC30 / UC58) ---------------- */
+const PICKLIST_FALLBACK = {
+  universities: () => UNIVERSITIES, programs: () => PROGRAMS, districts: () => DISTRICTS,
+  domains: () => DOMAINS, leadSources: () => LEAD_SOURCES,
+  digitalSubSources: () => DIGITAL_SUBSOURCES, lossReasons: () => LOSS_REASONS
+};
+function picklist(key) {
+  const v = DB && DB.picklists && DB.picklists[key];
+  if (Array.isArray(v) && v.length) return v;
+  const fb = PICKLIST_FALLBACK[key];
+  return fb ? fb() : [];
+}
+
+/* ---------------- Admin-configurable mandatory fields (UC59) ---------------- */
+function mandatoryFieldsFor(stage) {
+  const cfg = DB && DB.mandatoryFields;
+  return (cfg && cfg[stage]) || STAGE_MANDATORY_FIELDS[stage] || [];
+}
+function fieldLabel(id) {
+  const f = LEAD_FIELD_CATALOG.find(x => x.id === id);
+  return f ? f.label : id;
+}
+
+/* ---------------- Admin-configurable SLA timings (UC32 / UC33) ---------------- */
+function slaRules() {
+  return Object.assign({ firstContactDays: 1, followUpIntervalDays: 5, graceDays: 1 }, DB.slaRules || {});
 }
 
 /* ---------------- Stage transition rules (editable via Admin — UC38/UC64) ---------------- */
@@ -198,20 +237,18 @@ function slaStatsFor(leads) {
 }
 
 /* ---------------- Escalation helpers (UC32/UC33/UC34) ---------------- */
-const SLA_GRACE_DAYS = 1; // UC32 - grace period before a missed follow-up escalates
-
 function isMissedFollowUpEscalation(lead) {
-  // UC32 — a scheduled follow-up is past its due date beyond the grace period.
+  // UC32 — a scheduled follow-up is past its due date beyond the configured grace period.
   if (lead.deactivated || lead.stage === "Closed" || lead.stage === "Converted") return false;
   const d = followUpDaysUntilDue(lead);
-  return d !== null && d < -SLA_GRACE_DAYS;
+  return d !== null && d < -slaRules().graceDays;
 }
 
 function isNewLeadIgnored(lead) {
-  // UC33 - brand-new lead (only the auto "Create" activity) untouched past the same working day.
+  // UC33 — brand-new lead (only the auto "Create" activity) untouched past the configured window.
   if (lead.deactivated || lead.stage !== "Open") return false;
   const onlyCreateEvent = (lead.activity || []).length <= 1;
-  return onlyCreateEvent && daysAgo(lead.createdAt) >= 1;
+  return onlyCreateEvent && daysAgo(lead.createdAt) >= slaRules().firstContactDays;
 }
 
 /* ---------------- Notifications (UC32/UC33/UC34) ---------------- */
@@ -263,12 +300,12 @@ function actualEnrolments(counsellorId, intakeId) {
 }
 
 function isMandatoryMet(lead, stage) {
-  const fields = STAGE_MANDATORY_FIELDS[stage] || [];
+  const fields = mandatoryFieldsFor(stage);
   const missing = [];
   fields.forEach(f => {
     // UC56 — pending-results flag relaxes the academic-result fields specifically
-    if ((f === "olResult" || f === "alResult") && lead.resultsPending) return;
-    if (!lead[f] || String(lead[f]).trim() === "") missing.push(f);
+    if ((f === "olResult" || f === "alResult" || f === "languageScore") && lead.resultsPending) return;
+    if (!lead[f] || String(lead[f]).trim() === "") missing.push(fieldLabel(f));
   });
   return { ok: missing.length === 0, missing };
 }

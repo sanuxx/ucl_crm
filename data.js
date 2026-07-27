@@ -28,6 +28,23 @@ const PROGRAM_HANDBOOKS = {
 const STAGES = ["Open", "Qualified", "Converted", "Closed"];
 const STAGE_COLORS = { Open: "#2563eb", Qualified: "#e0821e", Converted: "#1c8a4c", Closed: "#6b7684" };
 
+// The four built-in stages carry business meaning that the engine depends on:
+//   Open      → entry point for new leads; same-day contact SLA (UC33)
+//   Qualified → counts toward qualified/inquiry conversion KPIs
+//   Converted → fires the conversion automation and creates commission records
+//   Closed    → terminal; drives loss-reason analysis (UC77)
+// They can be renamed, recoloured and reordered, but not deleted.
+// Admins may add any number of additional custom stages around them (UC64).
+const SYSTEM_STAGES = ["Open", "Qualified", "Converted", "Closed"];
+const DEFAULT_STAGE_COLOR = "#7c3aed";
+
+function stageKeyFrom(label, existing) {
+  let base = String(label).trim().replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "Stage";
+  let key = base, n = 2;
+  while (existing.includes(key)) key = base + "_" + n++;
+  return key;
+}
+
 // Allowed forward transitions (M2 UC37/UC38/UC64)
 const STAGE_TRANSITIONS = {
   Open: ["Qualified", "Closed"],
@@ -44,6 +61,22 @@ const STAGE_MANDATORY_FIELDS = {
   Converted: ["name", "mobile", "email", "program", "university", "intakeId"],
   Closed: []
 };
+
+// Lead fields an admin may mark mandatory per stage (UC59)
+const LEAD_FIELD_CATALOG = [
+  { id: "name", label: "Full Name" },
+  { id: "mobile", label: "Mobile" },
+  { id: "email", label: "Email" },
+  { id: "university", label: "University" },
+  { id: "program", label: "Program" },
+  { id: "district", label: "District" },
+  { id: "intakeId", label: "Intake Cycle" },
+  { id: "olResult", label: "O/L Result" },
+  { id: "alResult", label: "A/L Result" },
+  { id: "languageScore", label: "Language Score" },
+  { id: "studentId", label: "Student ID" },
+  { id: "staffName", label: "Staff Name" }
+];
 
 const CHECKLIST_TEMPLATE = [
   "Verify academic results",
@@ -150,8 +183,9 @@ function seedCommissionPlans() {
   ];
 }
 
-function makeChecklist() {
-  return CHECKLIST_TEMPLATE.map(label => ({ label, done: Math.random() > 0.5 }));
+function makeChecklist(allDone) {
+  const items = (DB && DB.checklistTemplate) ? DB.checklistTemplate : CHECKLIST_TEMPLATE;
+  return items.map(label => ({ label, done: allDone === undefined ? Math.random() > 0.5 : !!allDone }));
 }
 
 // UC46 — realistic history of completed follow-ups, each with a due date and an
@@ -298,11 +332,33 @@ function defaultDB() {
     commissionPlans: seedCommissionPlans(),
     auditLog: seedAuditLog(),
     notifications: [], // UC32/33/34 — escalation notifications addressed to specific users
+    stages: STAGES.slice(), // UC64 — ordered stage set; admins may add/remove/reorder
     statusLabels: STAGES.reduce((m, s) => (m[s] = s, m), {}), // UC64 — editable display labels per stage
     statusColors: Object.assign({}, STAGE_COLORS), // UC64 — editable colours per stage
     // Editable copy of stage transition rules (UC38/UC64) — starts from the defaults
     transitionRules: JSON.parse(JSON.stringify(STAGE_TRANSITIONS)),
     rolePermissions: defaultRolePermissions(), // UC49
+
+    /* ---- Admin-configurable field/form model ---- */
+    // UC58 / UC30 / UC25 — every dropdown in the lead form is admin-editable
+    picklists: {
+      universities: UNIVERSITIES.slice(),
+      programs: PROGRAMS.slice(),
+      districts: DISTRICTS.slice(),
+      domains: DOMAINS.slice(),
+      leadSources: LEAD_SOURCES.slice(),
+      digitalSubSources: DIGITAL_SUBSOURCES.slice(),
+      lossReasons: LOSS_REASONS.slice()
+    },
+    // UC59 — which fields are mandatory to ENTER each stage
+    mandatoryFields: JSON.parse(JSON.stringify(STAGE_MANDATORY_FIELDS)),
+    // UC54 — stage qualification checklist items
+    checklistTemplate: CHECKLIST_TEMPLATE.slice(),
+    // UC60 — configurable duplicate-matching rules
+    duplicateRules: { matchMobile: true, matchEmail: true, matchName: false },
+    // UC32 / UC33 — SLA + escalation timings
+    slaRules: { firstContactDays: 1, followUpIntervalDays: 5, graceDays: 1 },
+
     currentUserId: "u_mgr1",
     counsellorTargets: seedTargets(users, intakes), // UC3
     reports: [], // generated commission reports (UC6-UC13)
@@ -344,6 +400,10 @@ function migrateDB() {
     if (DB[key] === undefined) DB[key] = fresh[key];
   });
   DB.users.forEach(u => { if (u.domain === undefined) u.domain = "All"; });
+  // Backfill any individually-missing picklist (e.g. a key added after the DB was saved)
+  if (DB.picklists) Object.keys(fresh.picklists).forEach(k => {
+    if (!Array.isArray(DB.picklists[k]) || !DB.picklists[k].length) DB.picklists[k] = fresh.picklists[k];
+  });
   DB.leads.forEach(l => {
     if (l.escalated === undefined) l.escalated = false;
     if (l.districtOther === undefined) l.districtOther = "";
