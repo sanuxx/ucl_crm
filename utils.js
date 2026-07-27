@@ -168,6 +168,13 @@ function picklist(key) {
   return fb ? fb() : [];
 }
 
+/* ---------------- UC55 / UC57 — academic grade scales ---------------- */
+// A/L rows are graded on the scale matching the lead's exam type (UC57).
+function gradeScaleFor(kind, examType) {
+  if (kind === "ol") return GRADE_SCALES["O/L"];
+  return GRADE_SCALES[examType] || GRADE_SCALES["Local A/L"];
+}
+
 /* ---------------- Admin-configurable mandatory fields (UC59) ---------------- */
 function mandatoryFieldsFor(stage) {
   const cfg = DB && DB.mandatoryFields;

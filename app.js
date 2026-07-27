@@ -710,22 +710,27 @@ function renderLeadModalTab() {
       <div class="field"><label>Exam Type <span class="pill">UC57</span></label>
         <select id="f_examType"><option ${L.examType === "Local A/L" ? "selected" : ""}>Local A/L</option><option ${L.examType === "London A/L" ? "selected" : ""}>London A/L</option></select>
       </div>
+      ${gradeTableHTML("ol", L)}
+      ${gradeTableHTML("al", L)}
+      <hr class="sep">
       <div class="grid-2">
-        <div class="field"><label class="${L.resultsPending ? "" : "required"}">O/L Result</label><input id="f_ol" value="${esc(L.olResult)}" placeholder="e.g. 8 Passes"></div>
-        <div class="field"><label class="${L.resultsPending ? "" : "required"}">A/L Result ${L.examType === "London A/L" ? "(London grading)" : "(Local grading)"}</label><input id="f_al" value="${esc(L.alResult)}" placeholder="e.g. 3 Passes"></div>
         <div class="field"><label>Language Test</label><select id="f_langTest"><option ${L.languageTest === "IELTS" ? "selected" : ""}>IELTS</option><option ${L.languageTest === "TOEFL" ? "selected" : ""}>TOEFL</option><option ${L.languageTest === "PTE" ? "selected" : ""}>PTE</option><option ${L.languageTest === "None" ? "selected" : ""}>None</option></select></div>
         <div class="field"><label>Score</label><input id="f_langScore" value="${esc(L.languageScore)}" placeholder="e.g. 6.5"></div>
       </div>
     `;
+    bindGradeRowHandlers();
     document.getElementById("f_pending").onchange = e => { L.resultsPending = e.target.checked; renderLeadModalTab(); };
     document.getElementById("f_examType").onchange = e => {
       const newVal = e.target.value;
-      if ((L.olResult || L.alResult) && newVal !== L.examType) {
-        if (!confirm("Changing exam type will reset previously entered O/L and A/L results (UC57 - AF1). Continue?")) {
+      // UC57 - AF1: A/L grades are scale-specific, so switching exam type invalidates them
+      const hasAL = (L.alSubjects || []).some(r => r.grade);
+      if (hasAL && newVal !== L.examType) {
+        if (!confirm(`Changing exam type will clear the ${(L.alSubjects || []).length} recorded A/L grade(s), since ${newVal} uses a different grading scale (UC57 - AF1). Continue?`)) {
           e.target.value = L.examType;
           return;
         }
-        L.olResult = ""; L.alResult = "";
+        L.alSubjects = [];
+        L.alResult = "";
       }
       L.examType = newVal;
       renderLeadModalTab();
@@ -768,6 +773,72 @@ function renderLeadModalTab() {
   `;
 }
 
+/* ============================================================
+   Structured academic results — subject + grade rows (UC55 / UC57)
+   ============================================================ */
+function gradeRows(L, kind) {
+  const key = kind === "ol" ? "olSubjects" : "alSubjects";
+  if (!Array.isArray(L[key])) L[key] = [];
+  return L[key];
+}
+
+function gradeTableHTML(kind, L) {
+  const rows = gradeRows(L, kind);
+  const isOl = kind === "ol";
+  const scale = gradeScaleFor(kind, L.examType);
+  const subjects = picklist(isOl ? "olSubjects" : "alSubjects");
+  const title = isOl ? "O/L Results" : `A/L Results — ${esc(L.examType)}`;
+  const req = L.resultsPending ? "" : "required";
+
+  return `
+    <div class="card" style="box-shadow:none;margin-bottom:16px">
+      <h3 style="margin-bottom:8px"><span class="${req}">${title}</span>
+        <span class="pill">${isOl ? "UC55" : "UC57 grading scale"}</span></h3>
+      ${rows.length ? `
+      <div class="table-wrap"><table>
+        <thead><tr><th>Subject</th><th style="width:130px">Grade</th><th style="width:60px"></th></tr></thead>
+        <tbody>${rows.map((r, i) => `
+          <tr>
+            <td><input list="${kind}SubjectList" class="gradeSubject" data-kind="${kind}" data-idx="${i}" value="${esc(r.subject || "")}" placeholder="Subject name"></td>
+            <td><select class="gradeValue" data-kind="${kind}" data-idx="${i}">
+              <option value="">—</option>
+              ${scale.map(g => `<option ${r.grade === g ? "selected" : ""}>${g}</option>`).join("")}
+            </select></td>
+            <td><button class="btn sm ghost" onclick="removeGradeRow('${kind}',${i})" title="Remove subject">✕</button></td>
+          </tr>`).join("")}</tbody>
+      </table></div>` : `<p class="small-muted">No subjects recorded yet.</p>`}
+      <datalist id="${kind}SubjectList">${subjects.map(s => `<option value="${esc(s)}">`).join("")}</datalist>
+      <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn sm secondary" onclick="addGradeRow('${kind}')">+ Add Subject</button>
+        <span class="small-muted">Grades available: ${scale.join(" · ")}</span>
+        ${rows.length ? `<span class="pill">Summary: ${esc(summariseGrades(rows)) || "—"}</span>` : ""}
+      </div>
+    </div>`;
+}
+
+// Keep edits in the in-memory lead as the user types, so switching tabs doesn't lose them
+function bindGradeRowHandlers() {
+  const L = window.__editingLead;
+  document.querySelectorAll(".gradeSubject").forEach(el => el.oninput = e => {
+    gradeRows(L, e.target.dataset.kind)[+e.target.dataset.idx].subject = e.target.value;
+  });
+  document.querySelectorAll(".gradeValue").forEach(el => el.onchange = e => {
+    gradeRows(L, e.target.dataset.kind)[+e.target.dataset.idx].grade = e.target.value;
+    renderLeadModalTab(); // refresh the summary pill
+  });
+}
+
+function addGradeRow(kind) {
+  syncFieldsFromDOM();
+  gradeRows(window.__editingLead, kind).push({ subject: "", grade: "" });
+  renderLeadModalTab();
+}
+function removeGradeRow(kind, idx) {
+  syncFieldsFromDOM();
+  gradeRows(window.__editingLead, kind).splice(idx, 1);
+  renderLeadModalTab();
+}
+
 function syncFieldsFromDOM() {
   const L = window.__editingLead;
   const get = id => document.getElementById(id);
@@ -789,8 +860,17 @@ function syncFieldsFromDOM() {
   if (get("f_referralType")) L.referralType = get("f_referralType").value;
   if (get("f_lossReason")) L.lossReason = get("f_lossReason").value;
   if (get("f_examType")) L.examType = get("f_examType").value;
-  if (get("f_ol")) L.olResult = get("f_ol").value;
-  if (get("f_al")) L.alResult = get("f_al").value;
+  // Structured academic rows → read live inputs, then derive the roll-up summaries (UC55)
+  document.querySelectorAll(".gradeSubject").forEach(el => {
+    const r = gradeRows(L, el.dataset.kind)[+el.dataset.idx];
+    if (r) r.subject = el.value;
+  });
+  document.querySelectorAll(".gradeValue").forEach(el => {
+    const r = gradeRows(L, el.dataset.kind)[+el.dataset.idx];
+    if (r) r.grade = el.value;
+  });
+  L.olResult = summariseGrades(L.olSubjects);
+  L.alResult = summariseGrades(L.alSubjects);
   if (get("f_langTest")) L.languageTest = get("f_langTest").value;
   if (get("f_langScore")) L.languageScore = get("f_langScore").value;
   if (get("f_pending")) L.resultsPending = get("f_pending").checked;
@@ -813,8 +893,16 @@ function exportLeadTimelinePDF() {
       <tr><th>Source</th><td>${esc(L.leadSource)}</td><th>Assigned To</th><td>${esc(userName(L.assignedTo))}</td></tr>
       <tr><th>Intake</th><td>${esc((DB.intakes.find(i => i.id === L.intakeId) || {}).name || "—")}</td><th>Created</th><td>${fmtDate(L.createdAt)}</td></tr>
     </tbody></table>`;
+  const gradeSection = (label, rows) => (rows && rows.length)
+    ? `<h3>${label}</h3>${rowsToTableHTML([["Subject", "Grade"], ...rows.map(r => [r.subject, r.grade])])}`
+    : "";
+  const academics = L.resultsPending
+    ? `<h3>Academic Results</h3><p class="small-muted">⏳ Results Pending — mandatory validation relaxed (UC56).</p>`
+    : gradeSection("O/L Results", L.olSubjects) + gradeSection(`A/L Results (${esc(L.examType)})`, L.alSubjects);
+
   const rows = [["Timestamp", "Type", "User", "Details"], ...(L.activity || []).map(a => [fmtDateTime(a.ts), a.type, a.user, a.text])];
   const html = `<h3>Lead Summary</h3>${summary}
+    ${academics}
     <h3>Interaction Timeline (${(L.activity || []).length} entries)</h3>${rowsToTableHTML(rows)}`;
   if (printToPDF({ title: "Lead Timeline — " + L.name, subtitle: "Complete interaction history (UC66 / UC67)", html, orientation: "portrait" })) {
     logAudit("EXPORT_PDF", "Lead:" + L.id, "Timeline exported as PDF for external review (UC67 - AF1)");
@@ -2241,7 +2329,9 @@ function adminFieldsHTML(lock, lockNote, isAdmin) {
     ["domains", "Tenants / Domains", "UC30"],
     ["leadSources", "Lead Sources", "UC21 / UC22 / UC47"],
     ["digitalSubSources", "Digital Sub-Sources", "UC25"],
-    ["lossReasons", "Loss Reasons", "UC77"]
+    ["lossReasons", "Loss Reasons", "UC77"],
+    ["olSubjects", "O/L Subjects", "UC55"],
+    ["alSubjects", "A/L Subjects", "UC55"]
   ];
   return `
     <div class="card">
@@ -2466,7 +2556,8 @@ function resetPicklists() {
   DB.picklists = {
     universities: UNIVERSITIES.slice(), programs: PROGRAMS.slice(), districts: DISTRICTS.slice(),
     domains: DOMAINS.slice(), leadSources: LEAD_SOURCES.slice(),
-    digitalSubSources: DIGITAL_SUBSOURCES.slice(), lossReasons: LOSS_REASONS.slice()
+    digitalSubSources: DIGITAL_SUBSOURCES.slice(), lossReasons: LOSS_REASONS.slice(),
+    olSubjects: OL_SUBJECTS.slice(), alSubjects: AL_SUBJECTS.slice()
   };
   logAudit("RESET", "Picklists", "Reset to defaults");
   saveDB();

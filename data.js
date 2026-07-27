@@ -62,6 +62,17 @@ const STAGE_MANDATORY_FIELDS = {
   Closed: []
 };
 
+/* ---- UC55 / UC57 — structured academic results ---- */
+const OL_SUBJECTS = ["Mathematics", "Science", "English", "Sinhala", "History", "Religion", "ICT", "Commerce", "Art", "Geography"];
+const AL_SUBJECTS = ["Combined Maths", "Physics", "Chemistry", "Biology", "Accounting", "Business Studies", "Economics", "ICT", "English Literature"];
+
+// UC57 — the grading scale switches with the exam type
+const GRADE_SCALES = {
+  "O/L": ["A", "B", "C", "S", "W"],
+  "Local A/L": ["A", "B", "C", "S", "F"],
+  "London A/L": ["A*", "A", "B", "C", "D", "E", "U"]
+};
+
 // Lead fields an admin may mark mandatory per stage (UC59)
 const LEAD_FIELD_CATALOG = [
   { id: "name", label: "Full Name" },
@@ -183,6 +194,29 @@ function seedCommissionPlans() {
   ];
 }
 
+// Builds a random set of {subject, grade} rows for the seed data (UC55)
+function makeGradeRows(subjectPool, scaleKey, count) {
+  const scale = GRADE_SCALES[scaleKey];
+  const pool = subjectPool.slice();
+  const rows = [];
+  for (let i = 0; i < count && pool.length; i++) {
+    const idx = Math.floor(Math.random() * pool.length);
+    rows.push({ subject: pool.splice(idx, 1)[0], grade: rand(scale) });
+  }
+  return rows;
+}
+
+// "3A 2B 1C" — a compact readable roll-up used in tables, exports and the
+// mandatory-field check, always derived from the structured rows.
+function summariseGrades(rows) {
+  if (!rows || !rows.length) return "";
+  const counts = {};
+  rows.forEach(r => { if (r.grade) counts[r.grade] = (counts[r.grade] || 0) + 1; });
+  const keys = Object.keys(counts);
+  if (!keys.length) return "";
+  return keys.map(g => counts[g] + g).join(" ");
+}
+
 function makeChecklist(allDone) {
   const items = (DB && DB.checklistTemplate) ? DB.checklistTemplate : CHECKLIST_TEMPLATE;
   return items.map(label => ({ label, done: allDone === undefined ? Math.random() > 0.5 : !!allDone }));
@@ -223,6 +257,9 @@ function seedLeads(users, intakes) {
     const isReferral = source === "Agent Referral" || Math.random() < 0.1;
     const created = randDateWithinDays(75);
     const owner = rand(counsellors);
+    // Pending-results leads have no grades on file yet (UC56)
+    const olRows = resultsPending ? [] : makeGradeRows(OL_SUBJECTS, "O/L", 6 + Math.floor(Math.random() * 3));
+    const alRows = resultsPending ? [] : makeGradeRows(AL_SUBJECTS, examType, 3);
 
     // UC31 — a real scheduled follow-up date: spread across overdue / today / upcoming
     const r = Math.random();
@@ -252,8 +289,10 @@ function seedLeads(users, intakes) {
       districtOther: "",
       examType,
       resultsPending,
-      olResult: resultsPending ? "" : (Math.random() > 0.5 ? "6 Passes" : "8 Passes"),
-      alResult: resultsPending ? "" : (Math.random() > 0.5 ? "2 Passes" : "3 Passes"),
+      olSubjects: olRows,
+      alSubjects: alRows,
+      olResult: summariseGrades(olRows), // derived roll-up of olSubjects
+      alResult: summariseGrades(alRows), // derived roll-up of alSubjects
       languageTest: rand(["IELTS", "TOEFL", "PTE", "None"]),
       languageScore: resultsPending ? "" : (5 + Math.random() * 3.5).toFixed(1),
       stage,
@@ -348,7 +387,9 @@ function defaultDB() {
       domains: DOMAINS.slice(),
       leadSources: LEAD_SOURCES.slice(),
       digitalSubSources: DIGITAL_SUBSOURCES.slice(),
-      lossReasons: LOSS_REASONS.slice()
+      lossReasons: LOSS_REASONS.slice(),
+      olSubjects: OL_SUBJECTS.slice(),
+      alSubjects: AL_SUBJECTS.slice()
     },
     // UC59 — which fields are mandatory to ENTER each stage
     mandatoryFields: JSON.parse(JSON.stringify(STAGE_MANDATORY_FIELDS)),
@@ -409,6 +450,8 @@ function migrateDB() {
     if (l.districtOther === undefined) l.districtOther = "";
     if (l.nextFollowUp === undefined) l.nextFollowUp = l.stage === "Closed" ? "" : todayISO();
     if (l.followUpLog === undefined) l.followUpLog = [];
+    if (l.olSubjects === undefined) l.olSubjects = [];
+    if (l.alSubjects === undefined) l.alSubjects = [];
     if (l.tuitionFee === undefined) l.tuitionFee = 850000;
     if (l.amountPaid === undefined) l.amountPaid = 0;
     if (l.outstandingBalance === undefined) l.outstandingBalance = 0;
