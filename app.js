@@ -228,6 +228,76 @@ function renderDashboard(root) {
     </div>` : ""}
     ${!statRow && !canViewWidget("pipeline") && !canViewWidget("followups") && !canViewWidget("activity")
       ? `<div class="empty-state">No dashboard widgets are enabled for the ${esc(currentRole())} role (UC49).</div>` : ""}
+
+    ${renderRoleStatusDashboard(leads)}
+  `;
+}
+
+// Individual Counsellor Dashboard View (Counsellor role) / Manager Dashboard View (Manager and above) —
+// same programme-wise + target-vs-actual breakdown, scoped by visibleLeads() per role (UC26/UC27/UC29).
+function renderRoleStatusDashboard(leads) {
+  const isManagerUp = ["Manager", "Head of Marketing", "CEO", "Admin"].includes(currentRole());
+  const suffix = isManagerUp ? " — All Counsellors" : "";
+  const title = isManagerUp ? "Manager Dashboard View" : "Individual Counsellor Dashboard View";
+
+  const qualified = leads.filter(l => !l.deactivated && (l.stage === "Qualified" || l.stage === "Converted"));
+  const enrolled = leads.filter(l => !l.deactivated && l.stage === "Converted");
+  const offerCond = detailedStatusCount(leads, "Offer Received Conditional");
+  const offerUncond = detailedStatusCount(leads, "Offer Received Unconditional");
+
+  const followUpLeads = leads.filter(l => !l.deactivated && l.stage !== "Closed" && l.nextFollowUp);
+  const overdue = followUpLeads.filter(l => followUpStatus(l) === "Overdue").length;
+  const today = followUpLeads.filter(l => followUpStatus(l) === "Today").length;
+  const upcoming = followUpLeads.filter(l => followUpStatus(l) === "Upcoming").length;
+
+  const counsellorIds = isManagerUp
+    ? (currentRole() === "Manager" ? teamUserIds(getCurrentUser().id) : DB.users.filter(u => u.role === "Counsellor").map(u => u.id))
+    : [getCurrentUser().id];
+  const targets = (DB.counsellorTargets || []).filter(t => counsellorIds.includes(t.counsellorId));
+  const targetRows = targets.map(t => ({
+    label: `${userName(t.counsellorId)} — ${(DB.intakes.find(i => i.id === t.intakeId) || {}).name || t.intakeId}`,
+    target: t.target,
+    actual: actualEnrolments(t.counsellorId, t.intakeId)
+  }));
+
+  return `
+    <h2 style="margin:26px 0 4px">${esc(title)}<span class="pill">${esc(currentRole())}</span></h2>
+    <div class="two-col">
+      <div class="card">
+        <h3>Total Leads Programme Wise${suffix}</h3>
+        ${simpleBarChart(programWiseCounts(leads.filter(l => !l.deactivated)))}
+      </div>
+      <div class="card">
+        <h3>Total Qualified Leads Programme Wise${suffix}</h3>
+        ${simpleBarChart(programWiseCounts(qualified))}
+      </div>
+      <div class="card">
+        <h3>Total Programme Wise Enrolled${suffix}</h3>
+        ${simpleBarChart(programWiseCounts(enrolled))}
+      </div>
+      <div class="card">
+        <h3>Offer Received${suffix}</h3>
+        <div style="display:flex;gap:10px;text-align:center;">
+          <div style="flex:1"><div style="font-size:24px;font-weight:700;color:var(--amber)">${offerCond}</div><div class="small-muted">Conditional</div></div>
+          <div style="flex:1"><div style="font-size:24px;font-weight:700;color:var(--green)">${offerUncond}</div><div class="small-muted">Unconditional</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Target vs Actual${suffix} <span class="pill">UC3</span></h3>
+        ${targetRows.length ? simpleBarChart(targetRows.flatMap(r => [
+          { label: r.label + " (Target)", value: r.target, color: "#94a3b8" },
+          { label: r.label + " (Actual)", value: r.actual, color: "#2563eb" }
+        ])) : `<p class="small-muted">No targets set.</p>`}
+      </div>
+      <div class="card">
+        <h3>Follow Up Status${suffix}</h3>
+        <div style="display:flex;gap:10px;text-align:center;">
+          <div style="flex:1"><div style="font-size:24px;font-weight:700;color:var(--red)">${overdue}</div><div class="small-muted">Overdue</div></div>
+          <div style="flex:1"><div style="font-size:24px;font-weight:700;color:var(--amber)">${today}</div><div class="small-muted">Due Today</div></div>
+          <div style="flex:1"><div style="font-size:24px;font-weight:700;color:var(--green)">${upcoming}</div><div class="small-muted">Upcoming</div></div>
+        </div>
+      </div>
+    </div>
   `;
 }
 
@@ -664,6 +734,7 @@ function renderLeadModalTab() {
         </div>
         <div class="field ${L.leadSource === "Student" ? "" : "hidden"}" id="wrap_studentId"><label class="required">Student ID <span class="pill">UC21 dynamic</span></label><input id="f_studentId" value="${esc(L.studentId)}"></div>
         <div class="field ${L.leadSource === "Staff" ? "" : "hidden"}" id="wrap_staffName"><label class="required">Staff Name <span class="pill">UC22 dynamic</span></label><input id="f_staffName" value="${esc(L.staffName)}"></div>
+        <div class="field"><label>School / Company</label><input id="f_schoolOrCompany" value="${esc(L.schoolOrCompany || "")}"></div>
         <div class="field"><label>University</label><select id="f_university"><option value="">-- Select --</option>${picklist('universities').map(u => `<option ${L.university === u ? "selected" : ""}>${u}</option>`).join("")}</select></div>
         <div class="field"><label>Program</label><select id="f_program"><option value="">-- Select --</option>${picklist('programs').map(p => `<option ${L.program === p ? "selected" : ""}>${p}</option>`).join("")}</select></div>
         <div class="field"><label>District <span class="pill">UC58</span></label>
@@ -678,6 +749,13 @@ function renderLeadModalTab() {
           ${!canTransferLeads() && !isNew ? '<div class="small-muted">🔒 Only Managers can reassign leads (UC69)</div>' : ""}
         </div>
         <div class="field"><label>Domain / Branch <span class="pill">UC30</span></label><select id="f_domain">${picklist('domains').map(d => `<option ${L.domain === d ? "selected" : ""}>${d}</option>`).join("")}</select></div>
+        <div class="field"><label>Detailed Status</label>
+          <select id="f_detailedStatus">
+            <option value="">-- None --</option>
+            <optgroup label="Not Qualified Lead">${detailedStatusOptions("Not Qualified Lead").map(s => `<option ${L.detailedStatus === s ? "selected" : ""}>${s}</option>`).join("")}</optgroup>
+            <optgroup label="Qualified Lead">${detailedStatusOptions("Qualified Lead").map(s => `<option ${L.detailedStatus === s ? "selected" : ""}>${s}</option>`).join("")}</optgroup>
+          </select>
+        </div>
       </div>
       <div class="checkbox-row"><input type="checkbox" id="f_isReferral" ${L.isReferral ? "checked" : ""}> <label style="margin:0">This is a Referral (Staff or Student)</label></div>
       <div class="field ${L.isReferral ? "" : "hidden"}" id="wrap_referralType"><label>Referral Type</label>
@@ -849,6 +927,8 @@ function syncFieldsFromDOM() {
   if (get("f_digitalSub")) L.digitalSubSource = get("f_digitalSub").value;
   if (get("f_studentId")) L.studentId = get("f_studentId").value;
   if (get("f_staffName")) L.staffName = get("f_staffName").value;
+  if (get("f_schoolOrCompany")) L.schoolOrCompany = get("f_schoolOrCompany").value;
+  if (get("f_detailedStatus")) L.detailedStatus = get("f_detailedStatus").value;
   if (get("f_university")) L.university = get("f_university").value;
   if (get("f_program")) L.program = get("f_program").value;
   if (get("f_district")) L.district = get("f_district").value;

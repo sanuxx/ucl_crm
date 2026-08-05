@@ -25,6 +25,23 @@ const PROGRAM_HANDBOOKS = {
   // NOTE: "BA Marketing" intentionally has no handbook so UC36 - AF1 can be demonstrated
 };
 
+// UCL detailed lead statuses — a finer-grained classification layered on top of the
+// four system stages. "Not Qualified" statuses apply while a lead sits in Open/Closed;
+// "Qualified" statuses apply while a lead sits in Qualified/Converted (see statusStageBucket()).
+const DETAILED_STATUS_GROUPS = {
+  "Not Qualified Lead": [
+    "Programme Not Available", "No Entry Requirement", "Cannot Afford", "Scholarship Enquiry",
+    "Unintentional Enquiry", "Ringing No Answer", "Ringing No Response"
+  ],
+  "Qualified Lead": [
+    "Information Provided", "Prospective", "Appointment Scheduled", "Campus Visited",
+    "Application Link Sent", "Application Received but Documents Pending", "Application Submitted",
+    "Offer Received Conditional", "Offer Received Unconditional", "Registration Fee Paid",
+    "Down Payment Fee Paid", "Next Intake", "Future Intake", "Joined Competitor",
+    "Not Interested in UCL", "Change of Plans"
+  ]
+};
+
 const STAGES = ["Open", "Qualified", "Converted", "Closed"];
 const STAGE_COLORS = { Open: "#2563eb", Qualified: "#e0821e", Converted: "#1c8a4c", Closed: "#6b7684" };
 
@@ -86,7 +103,9 @@ const LEAD_FIELD_CATALOG = [
   { id: "alResult", label: "A/L Result" },
   { id: "languageScore", label: "Language Score" },
   { id: "studentId", label: "Student ID" },
-  { id: "staffName", label: "Staff Name" }
+  { id: "staffName", label: "Staff Name" },
+  { id: "schoolOrCompany", label: "School / Company" },
+  { id: "detailedStatus", label: "Detailed Status" }
 ];
 
 const CHECKLIST_TEMPLATE = [
@@ -148,7 +167,7 @@ function seedUsers() {
   return [
     { id: "u_ceo", name: "Ranil W.", role: "CEO", managerId: null, domain: "All" },
     { id: "u_hom", name: "Anjali Perera", role: "Head of Marketing", managerId: "u_ceo", domain: "All" },
-    { id: "u_admin", name: "Sanu (Admin)", role: "Admin", managerId: null, domain: "All" },
+    { id: "u_admin", name: "Dilmitha (Admin)", role: "Admin", managerId: null, domain: "All" },
     { id: "u_finance", name: "Kamal Silva", role: "Finance", managerId: "u_hom", domain: "All" },
     { id: "u_cadmin", name: "Nadeesha (Comm. Admin)", role: "Commission Admin", managerId: "u_hom", domain: "All" },
     { id: "u_mgr1", name: "Dilani Fernando", role: "Manager", managerId: "u_hom", domain: "Colombo Branch" },
@@ -283,6 +302,8 @@ function seedLeads(users, intakes) {
       digitalSubSource: source === "Digital" ? rand(DIGITAL_SUBSOURCES) : null,
       studentId: source === "Student" ? "STU" + (1000 + i) : "",
       staffName: source === "Staff" ? rand(FIRST_NAMES) + " " + rand(LAST_NAMES) : "",
+      schoolOrCompany: source === "Staff" ? rand(["Acme Corp", "Colombo Tech Ltd", "Global Edu Partners"]) : (source === "Student" ? rand(["Royal College", "Ladies' College", "Trinity College"]) : ""),
+      detailedStatus: stage === "Open" ? (Math.random() > 0.5 ? rand(DETAILED_STATUS_GROUPS["Not Qualified Lead"]) : "") : rand(DETAILED_STATUS_GROUPS["Qualified Lead"]),
       university: stage === "Open" && Math.random() > 0.5 ? "" : rand(UNIVERSITIES),
       program: stage === "Open" && Math.random() > 0.5 ? "" : rand(PROGRAMS),
       district: rand(DISTRICTS),
@@ -389,7 +410,9 @@ function defaultDB() {
       digitalSubSources: DIGITAL_SUBSOURCES.slice(),
       lossReasons: LOSS_REASONS.slice(),
       olSubjects: OL_SUBJECTS.slice(),
-      alSubjects: AL_SUBJECTS.slice()
+      alSubjects: AL_SUBJECTS.slice(),
+      detailedStatusesNotQualified: DETAILED_STATUS_GROUPS["Not Qualified Lead"].slice(),
+      detailedStatusesQualified: DETAILED_STATUS_GROUPS["Qualified Lead"].slice()
     },
     // UC59 — which fields are mandatory to ENTER each stage
     mandatoryFields: JSON.parse(JSON.stringify(STAGE_MANDATORY_FIELDS)),
@@ -441,6 +464,8 @@ function migrateDB() {
     if (DB[key] === undefined) DB[key] = fresh[key];
   });
   DB.users.forEach(u => { if (u.domain === undefined) u.domain = "All"; });
+  const adminUser = DB.users.find(u => u.id === "u_admin");
+  if (adminUser && adminUser.name === "Sanu (Admin)") adminUser.name = "Dilmitha (Admin)";
   // Backfill any individually-missing picklist (e.g. a key added after the DB was saved)
   if (DB.picklists) Object.keys(fresh.picklists).forEach(k => {
     if (!Array.isArray(DB.picklists[k]) || !DB.picklists[k].length) DB.picklists[k] = fresh.picklists[k];
@@ -452,6 +477,8 @@ function migrateDB() {
     if (l.followUpLog === undefined) l.followUpLog = [];
     if (l.olSubjects === undefined) l.olSubjects = [];
     if (l.alSubjects === undefined) l.alSubjects = [];
+    if (l.schoolOrCompany === undefined) l.schoolOrCompany = "";
+    if (l.detailedStatus === undefined) l.detailedStatus = "";
     if (l.tuitionFee === undefined) l.tuitionFee = 850000;
     if (l.amountPaid === undefined) l.amountPaid = 0;
     if (l.outstandingBalance === undefined) l.outstandingBalance = 0;

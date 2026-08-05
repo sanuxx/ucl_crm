@@ -306,6 +306,33 @@ function actualEnrolments(counsellorId, intakeId) {
   return DB.leads.filter(l => l.assignedTo === counsellorId && l.intakeId === intakeId && l.stage === "Converted" && !l.deactivated).length;
 }
 
+/* ---------------- Detailed lead statuses (UCL sub-statuses layered on the 4 system stages) ---------------- */
+function detailedStatusOptions(bucket) {
+  const key = bucket === "Not Qualified Lead" ? "detailedStatusesNotQualified" : "detailedStatusesQualified";
+  const v = DB && DB.picklists && DB.picklists[key];
+  if (Array.isArray(v) && v.length) return v;
+  return DETAILED_STATUS_GROUPS[bucket];
+}
+// Which detailed-status group a stage naturally pairs with (Open/Closed → Not Qualified, Qualified/Converted → Qualified)
+function statusBucketForStage(stage) {
+  return (stage === "Qualified" || stage === "Converted") ? "Qualified Lead" : "Not Qualified Lead";
+}
+
+/* ---------------- Programme-wise aggregation (Individual Counsellor / Manager dashboards) ---------------- */
+function programWiseCounts(leads, filterFn) {
+  const counts = {};
+  picklist("programs").forEach(p => counts[p] = 0);
+  leads.forEach(l => {
+    if (!l.program) return;
+    if (filterFn && !filterFn(l)) return;
+    counts[l.program] = (counts[l.program] || 0) + 1;
+  });
+  return Object.keys(counts).map(p => ({ label: p, value: counts[p] })).filter(r => r.value > 0);
+}
+function detailedStatusCount(leads, statusLabel) {
+  return leads.filter(l => l.detailedStatus === statusLabel && !l.deactivated).length;
+}
+
 function isMandatoryMet(lead, stage) {
   const fields = mandatoryFieldsFor(stage);
   const missing = [];
