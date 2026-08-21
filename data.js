@@ -6,10 +6,28 @@
 const DB_KEY = "uc_crm_db_v2";
 
 const UNIVERSITIES = ["Cardiff Metropolitan", "London South Bank", "Coventry University", "University of Sunderland", "Northumbria University"];
-const PROGRAMS = ["BSc Computing", "BA Business Management", "MSc Data Science", "MBA", "BSc Accounting & Finance", "BA Marketing"];
+const PROGRAMS = ["Foundation in Business & IT", "BSc Computing", "BA Business Management", "MSc Data Science", "MBA", "BSc Accounting & Finance", "BA Marketing"];
 const DISTRICTS = ["Colombo", "Gampaha", "Kandy", "Galle", "Jaffna", "Kurunegala", "Other"];
+// Country field — Sri Lanka is the default; district only applies while Sri Lanka is selected
+const COUNTRIES = ["Sri Lanka", "India", "United Kingdom", "Australia", "Canada", "United States", "Other"];
+// Program-Based Field Configuration — which academic fields the lead form shows is driven by
+// each program's type, admin-editable under Admin → Fields & Picklists.
+const PROGRAM_TYPES = ["Foundation", "Bachelor's", "Master's", "Other"];
+function defaultProgramTypes() {
+  return {
+    "Foundation in Business & IT": "Foundation",
+    "BSc Computing": "Bachelor's",
+    "BA Business Management": "Bachelor's",
+    "BSc Accounting & Finance": "Bachelor's",
+    "BA Marketing": "Bachelor's",
+    "MSc Data Science": "Master's",
+    "MBA": "Master's"
+  };
+}
 const LEAD_SOURCES = ["Student", "Staff", "Digital", "Bulk Upload", "Exhibition", "Walk-in", "Agent Referral"];
 const DIGITAL_SUBSOURCES = ["Facebook", "Google", "Instagram", "LinkedIn"];
+// Mode of Contact — how the lead reached out to the organisation (new lead field)
+const MODES_OF_CONTACT = ["Email", "Telephone Call", "Hotline", "General Line", "Walk-in", "Social Media", "Website Form"];
 const LOSS_REASONS = ["Financial constraints", "Went to competitor", "Visa rejected", "Not interested", "Unreachable", "Chose local university"];
 
 // Tenants / domains (UC30) — "All" means a global (unpartitioned) user
@@ -41,6 +59,14 @@ const DETAILED_STATUS_GROUPS = {
     "Not Interested in UCL", "Change of Plans"
   ]
 };
+
+// Student Journey Report (sales head/counsellor) — a lead counts as "having submitted an
+// application form" once its detailed status reaches one of these (or it has converted).
+const POST_APPLICATION_STATUSES = [
+  "Application Submitted", "Application Received but Documents Pending",
+  "Offer Received Conditional", "Offer Received Unconditional",
+  "Registration Fee Paid", "Down Payment Fee Paid"
+];
 
 const STAGES = ["Open", "Qualified", "Converted", "Closed"];
 const STAGE_COLORS = { Open: "#2563eb", Qualified: "#e0821e", Converted: "#1c8a4c", Closed: "#6b7684" };
@@ -105,8 +131,23 @@ const LEAD_FIELD_CATALOG = [
   { id: "studentId", label: "Student ID" },
   { id: "staffName", label: "Staff Name" },
   { id: "schoolOrCompany", label: "School / Company" },
-  { id: "detailedStatus", label: "Detailed Status" }
+  { id: "detailedStatus", label: "Detailed Status" },
+  { id: "modeOfContact", label: "Mode of Contact" },
+  { id: "country", label: "Country" },
+  { id: "previousSchool", label: "Previous School (Foundation)" },
+  { id: "bachelorsDegree", label: "Bachelor's Degree (Master's applicants)" },
+  { id: "bachelorsUniversity", label: "Bachelor's University (Master's applicants)" }
 ];
+
+// Application Form Management — status lifecycle for the student-facing application form
+const APPLICATION_STATUSES = ["Not Sent", "Sent", "Submitted", "Reviewed"];
+const OFFER_TYPES = ["Conditional", "Unconditional"];
+
+function defaultApplicationForm() {
+  return { status: "Not Sent", sentAt: "", submittedAt: "", reviewedAt: "", reviewedBy: "",
+    offerLetter: { status: "Not Issued", type: "", issuedAt: "" },
+    paymentPlan: { status: "Not Sent", installments: [], sentAt: "" } };
+}
 
 const CHECKLIST_TEMPLATE = [
   "Verify academic results",
@@ -129,6 +170,7 @@ const DASHBOARD_WIDGETS = [
   { id: "activity", label: "Recent Activity" }
 ];
 const REPORT_DEFS = [
+  { id: "journey", label: "Student Journey" },
   { id: "status", label: "Lead Status Distribution" },
   { id: "source", label: "Lead Source Performance" },
   { id: "university", label: "University-Wise" },
@@ -153,7 +195,7 @@ function defaultRolePermissions() {
   });
   // Sensible role-scoped defaults
   perms["Counsellor"].widgets = ["pipeline", "followups", "activity"];
-  perms["Counsellor"].reports = ["status", "sla"];
+  perms["Counsellor"].reports = ["status", "sla", "journey"];
   perms["Agent"].widgets = ["activity"];
   perms["Agent"].reports = ["agent"];
   perms["Finance"].reports = ["counsellor", "agent"];
@@ -236,6 +278,77 @@ function summariseGrades(rows) {
   return keys.map(g => counts[g] + g).join(" ");
 }
 
+// Synthetic-but-realistic "Stage Change" activity trail for a seeded lead — mirrors the entries
+// attemptStageChange()/handleKanbanDrop() write during real use, so the Student Journey Report has
+// genuine per-stage dates to show for demo data, not just leads touched during the live session.
+function makeStageActivity(createdAt, currentStage) {
+  const path = currentStage === "Qualified" ? ["Qualified"]
+    : currentStage === "Converted" ? ["Qualified", "Converted"]
+    : currentStage === "Closed" ? (Math.random() > 0.5 ? ["Closed"] : ["Qualified", "Closed"])
+    : [];
+  const events = [];
+  let cursor = new Date(createdAt);
+  let from = "Open";
+  path.forEach(to => {
+    cursor = new Date(Math.min(Date.now(), cursor.getTime() + (1 + Math.floor(Math.random() * 10)) * 86400000));
+    events.push({ ts: cursor.toISOString(), user: "System", type: "Stage Change", text: `Moved from ${from} to ${to}` });
+    from = to;
+  });
+  return events;
+}
+
+// Student Application Form Management — plausible seed status correlated with pipeline stage,
+// so the demo shows something meaningful for each status without every lead starting blank.
+function makeApplicationForm(stage) {
+  const f = defaultApplicationForm();
+  if (stage === "Open") return f;
+  const roll = Math.random();
+  if (stage === "Qualified") {
+    f.status = roll < 0.4 ? "Not Sent" : roll < 0.75 ? "Sent" : "Submitted";
+  } else if (stage === "Converted") {
+    f.status = roll < 0.5 ? "Submitted" : "Reviewed";
+    if (f.status === "Reviewed" && Math.random() > 0.4) {
+      f.offerLetter = { status: "Issued", type: rand(OFFER_TYPES), issuedAt: new Date().toISOString() };
+      if (Math.random() > 0.5) {
+        f.paymentPlan = {
+          status: "Sent", sentAt: new Date().toISOString(),
+          installments: [
+            { label: "Registration Fee", amount: 25000, dueDate: todayISO() },
+            { label: "Installment 1", amount: 200000, dueDate: isoDateOffset(30) },
+            { label: "Installment 2", amount: 200000, dueDate: isoDateOffset(90) }
+          ]
+        };
+      }
+    }
+  } else {
+    f.status = roll < 0.5 ? "Not Sent" : "Sent";
+  }
+  if (f.status !== "Not Sent") f.sentAt = new Date().toISOString();
+  if (f.status === "Submitted" || f.status === "Reviewed") f.submittedAt = new Date().toISOString();
+  if (f.status === "Reviewed") { f.reviewedAt = new Date().toISOString(); f.reviewedBy = "System"; }
+  return f;
+}
+
+// Follow-Up Notes & Task Management — a couple of realistic per-stage notes/tasks so the new
+// tab isn't empty on a fresh demo seed.
+function makeStageTasks(stage, createdAt) {
+  if (stage === "Open" || Math.random() > 0.55) return [];
+  const notes = [
+    "Called to confirm interest — asked to follow up next week.",
+    "Sent programme brochure, awaiting response.",
+    "Discussed tuition fees and payment options.",
+    "Parent requested a campus visit slot.",
+    "Confirmed documents are being prepared."
+  ];
+  const count = 1 + Math.floor(Math.random() * 2);
+  const tasks = [];
+  for (let i = 0; i < count; i++) {
+    const due = Math.random() > 0.5 ? isoDateOffset(-(1 + Math.floor(Math.random() * 6))) + "T10:00" : isoDateOffset(1 + Math.floor(Math.random() * 7)) + "T14:00";
+    tasks.push({ id: uid("task"), stage, note: rand(notes), dueAt: due, done: Math.random() > 0.6, createdAt: createdAt, createdBy: "System" });
+  }
+  return tasks;
+}
+
 function makeChecklist(allDone) {
   const items = (DB && DB.checklistTemplate) ? DB.checklistTemplate : CHECKLIST_TEMPLATE;
   return items.map(label => ({ label, done: allDone === undefined ? Math.random() > 0.5 : !!allDone }));
@@ -276,6 +389,9 @@ function seedLeads(users, intakes) {
     const isReferral = source === "Agent Referral" || Math.random() < 0.1;
     const created = randDateWithinDays(75);
     const owner = rand(counsellors);
+    const program = stage === "Open" && Math.random() > 0.5 ? "" : rand(PROGRAMS);
+    const progType = defaultProgramTypes()[program] || "Other";
+    const country = Math.random() > 0.85 ? rand(COUNTRIES.filter(c => c !== "Sri Lanka")) : "Sri Lanka";
     // Pending-results leads have no grades on file yet (UC56)
     const olRows = resultsPending ? [] : makeGradeRows(OL_SUBJECTS, "O/L", 6 + Math.floor(Math.random() * 3));
     const alRows = resultsPending ? [] : makeGradeRows(AL_SUBJECTS, examType, 3);
@@ -299,15 +415,22 @@ function seedLeads(users, intakes) {
       mobile: "07" + Math.floor(10000000 + Math.random() * 89999999),
       email: `${first}.${last}${i}@example.com`.toLowerCase(),
       leadSource: source,
+      modeOfContact: rand(MODES_OF_CONTACT),
       digitalSubSource: source === "Digital" ? rand(DIGITAL_SUBSOURCES) : null,
       studentId: source === "Student" ? "STU" + (1000 + i) : "",
       staffName: source === "Staff" ? rand(FIRST_NAMES) + " " + rand(LAST_NAMES) : "",
       schoolOrCompany: source === "Staff" ? rand(["Acme Corp", "Colombo Tech Ltd", "Global Edu Partners"]) : (source === "Student" ? rand(["Royal College", "Ladies' College", "Trinity College"]) : ""),
       detailedStatus: stage === "Open" ? (Math.random() > 0.5 ? rand(DETAILED_STATUS_GROUPS["Not Qualified Lead"]) : "") : rand(DETAILED_STATUS_GROUPS["Qualified Lead"]),
       university: stage === "Open" && Math.random() > 0.5 ? "" : rand(UNIVERSITIES),
-      program: stage === "Open" && Math.random() > 0.5 ? "" : rand(PROGRAMS),
-      district: rand(DISTRICTS),
+      program,
+      country,
+      district: country === "Sri Lanka" ? rand(DISTRICTS) : "",
       districtOther: "",
+      // Program-Based Field Configuration — only the fields relevant to this program's type are seeded
+      previousSchool: progType === "Foundation" ? rand(["Royal College", "Ladies' College", "Trinity College", "Ananda College"]) : "",
+      priorQualificationType: progType === "Foundation" ? rand(["O/L", "A/L"]) : "",
+      bachelorsDegree: progType === "Master's" ? rand(["BSc Computing", "BA Business Management", "BSc Accounting & Finance"]) : "",
+      bachelorsUniversity: progType === "Master's" ? rand(UNIVERSITIES) : "",
       examType,
       resultsPending,
       olSubjects: olRows,
@@ -335,8 +458,11 @@ function seedLeads(users, intakes) {
       nextFollowUp,
       followUpLog: makeFollowUpLog(created),
       escalated: false,
+      applicationForm: makeApplicationForm(stage),
+      tasks: makeStageTasks(stage, created),
       createdAt: created,
       activity: [
+        ...makeStageActivity(created, stage).reverse(),
         { ts: created, user: "System", type: "Create", text: `Lead created via ${source}` }
       ]
     };
@@ -380,6 +506,14 @@ function seedTargets(users, intakes) {
   return targets;
 }
 
+// Head of Marketing dashboards — target counts to compare against actuals (admin-editable)
+function seedPipelineStageTargets() {
+  return { Open: 90, Qualified: 55, Converted: 30, Closed: 20 };
+}
+function seedLeadSourceTargets() {
+  return { Student: 20, Staff: 12, Digital: 25, "Bulk Upload": 10, Exhibition: 15, "Walk-in": 10, "Agent Referral": 8 };
+}
+
 function defaultDB() {
   const users = seedUsers();
   const intakes = seedIntakes();
@@ -405,8 +539,10 @@ function defaultDB() {
       universities: UNIVERSITIES.slice(),
       programs: PROGRAMS.slice(),
       districts: DISTRICTS.slice(),
+      countries: COUNTRIES.slice(),
       domains: DOMAINS.slice(),
       leadSources: LEAD_SOURCES.slice(),
+      modesOfContact: MODES_OF_CONTACT.slice(),
       digitalSubSources: DIGITAL_SUBSOURCES.slice(),
       lossReasons: LOSS_REASONS.slice(),
       olSubjects: OL_SUBJECTS.slice(),
@@ -425,6 +561,9 @@ function defaultDB() {
 
     currentUserId: "u_mgr1",
     counsellorTargets: seedTargets(users, intakes), // UC3
+    pipelineStageTargets: seedPipelineStageTargets(), // Head of Marketing — Pipeline Target vs Actual dashboard
+    leadSourceTargets: seedLeadSourceTargets(), // Head of Marketing — Lead Source dashboard
+    programTypes: defaultProgramTypes(), // Program-Based Field Configuration
     reports: [], // generated commission reports (UC6-UC13)
     reportConfig: { // UC12
       columns: ["Student Name", "University", "Program", "Commission Amount", "Status"],
@@ -482,6 +621,22 @@ function migrateDB() {
     if (l.tuitionFee === undefined) l.tuitionFee = 850000;
     if (l.amountPaid === undefined) l.amountPaid = 0;
     if (l.outstandingBalance === undefined) l.outstandingBalance = 0;
+    if (l.modeOfContact === undefined) l.modeOfContact = "";
+    if (l.country === undefined) l.country = "Sri Lanka";
+    if (l.previousSchool === undefined) l.previousSchool = "";
+    if (l.priorQualificationType === undefined) l.priorQualificationType = "";
+    if (l.bachelorsDegree === undefined) l.bachelorsDegree = "";
+    if (l.bachelorsUniversity === undefined) l.bachelorsUniversity = "";
+    if (l.applicationForm === undefined) l.applicationForm = defaultApplicationForm();
+    if (l.tasks === undefined) l.tasks = [];
+  });
+  if (DB.programTypes) Object.keys(defaultProgramTypes()).forEach(p => {
+    if (DB.programTypes[p] === undefined) DB.programTypes[p] = defaultProgramTypes()[p];
+  });
+  // Backfill the new "journey" report for any role permissions saved before it existed
+  if (DB.rolePermissions) Object.keys(DB.rolePermissions).forEach(role => {
+    const p = DB.rolePermissions[role];
+    if (p && Array.isArray(p.reports) && !p.reports.includes("journey")) p.reports.push("journey");
   });
   saveDB();
 }

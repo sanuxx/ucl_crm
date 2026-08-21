@@ -149,6 +149,12 @@ function stageBadge(stage) {
 function commissionBadge(status) {
   return `<span class="badge ${status.toLowerCase()}">${status}</span>`;
 }
+// Student Application Form Management — visibility of application status on the lead record
+function applicationStatusBadge(applicationForm) {
+  const af = applicationForm || defaultApplicationForm();
+  const colorClass = { "Not Sent": "closed", "Sent": "pending", "Submitted": "qualified", "Reviewed": "converted" }[af.status] || "closed";
+  return `<span class="badge ${colorClass}">Application: ${esc(af.status)}</span>`;
+}
 
 function addActivity(lead, type, text) {
   lead.activity = lead.activity || [];
@@ -159,8 +165,14 @@ function addActivity(lead, type, text) {
 const PICKLIST_FALLBACK = {
   universities: () => UNIVERSITIES, programs: () => PROGRAMS, districts: () => DISTRICTS,
   domains: () => DOMAINS, leadSources: () => LEAD_SOURCES,
-  digitalSubSources: () => DIGITAL_SUBSOURCES, lossReasons: () => LOSS_REASONS
+  digitalSubSources: () => DIGITAL_SUBSOURCES, lossReasons: () => LOSS_REASONS,
+  modesOfContact: () => MODES_OF_CONTACT, countries: () => COUNTRIES
 };
+
+/* ---------------- Program-Based Field Configuration ---------------- */
+function programType(program) {
+  return (DB.programTypes && DB.programTypes[program]) || "Other";
+}
 function picklist(key) {
   const v = DB && DB.picklists && DB.picklists[key];
   if (Array.isArray(v) && v.length) return v;
@@ -229,6 +241,26 @@ function completeFollowUp(lead, nextInDays) {
   lead.followUpLog.push({ dueDate: due, completedAt: todayStr() });
   lead.nextFollowUp = addDaysStr(todayStr(), nextInDays === undefined ? 5 : nextInDays);
   return lead.nextFollowUp;
+}
+
+/* ---------------- Follow-Up Notes & Task Management (per pipeline stage) ---------------- */
+// Minutes until a task's due date/time — negative = overdue, matching followUpDaysUntilDue()'s sign convention.
+function taskMinutesUntilDue(task) {
+  if (!task.dueAt) return null;
+  return Math.round((new Date(task.dueAt).getTime() - Date.now()) / 60000);
+}
+function taskStatus(task) {
+  if (task.done) return "Done";
+  const m = taskMinutesUntilDue(task);
+  if (m === null) return "None";
+  if (m < 0) return "Overdue";
+  if (m < 24 * 60) return "Due Soon";
+  return "Upcoming";
+}
+function allOpenTasks(leads) {
+  const rows = [];
+  leads.forEach(l => (l.tasks || []).forEach(t => { if (!t.done) rows.push({ lead: l, task: t }); }));
+  return rows;
 }
 
 /* ---------------- UC46 — genuine SLA measurement ---------------- */
@@ -306,6 +338,14 @@ function actualEnrolments(counsellorId, intakeId) {
   return DB.leads.filter(l => l.assignedTo === counsellorId && l.intakeId === intakeId && l.stage === "Converted" && !l.deactivated).length;
 }
 
+/* ---------------- Head of Marketing dashboards — Pipeline & Lead Source targets ---------------- */
+function stageTarget(stage) {
+  return (DB.pipelineStageTargets && DB.pipelineStageTargets[stage]) || 0;
+}
+function leadSourceTarget(source) {
+  return (DB.leadSourceTargets && DB.leadSourceTargets[source]) || 0;
+}
+
 /* ---------------- Detailed lead statuses (UCL sub-statuses layered on the 4 system stages) ---------------- */
 function detailedStatusOptions(bucket) {
   const key = bucket === "Not Qualified Lead" ? "detailedStatusesNotQualified" : "detailedStatusesQualified";
@@ -316,6 +356,35 @@ function detailedStatusOptions(bucket) {
 // Which detailed-status group a stage naturally pairs with (Open/Closed → Not Qualified, Qualified/Converted → Qualified)
 function statusBucketForStage(stage) {
   return (stage === "Qualified" || stage === "Converted") ? "Qualified Lead" : "Not Qualified Lead";
+}
+
+/* ---------------- Not-Qualified Leads tab ---------------- */
+// A lead is "Not Qualified" once it carries one of the admin-configured Not-Qualified detailed statuses.
+function isNotQualifiedLead(lead) {
+  return !!lead.detailedStatus && detailedStatusOptions("Not Qualified Lead").includes(lead.detailedStatus);
+}
+
+/* ---------------- Student Journey Report (sales head/counsellor) ---------------- */
+// A lead counts as having submitted an application once its detailed status reaches the
+// application stage or later, or it has already been converted / onboarded.
+function hasSubmittedApplication(lead) {
+  return lead.stage === "Converted" || POST_APPLICATION_STATUSES.includes(lead.detailedStatus);
+}
+// Derives, from the lead's own activity log, the first date it reached each pipeline stage —
+// a genuine journey trace rather than a guess, matching the "Stage Change" entries written by
+// attemptStageChange()/handleKanbanDrop().
+function stageReachedDates(lead) {
+  const dates = { Open: lead.createdAt };
+  const acts = (lead.activity || []).slice().reverse(); // oldest first
+  acts.forEach(a => {
+    if (a.type !== "Stage Change") return;
+    const m = /to (.+)$/.exec(a.text || "");
+    if (!m) return;
+    const label = m[1].trim();
+    const stageKey = stages().find(s => stageLabel(s) === label);
+    if (stageKey && dates[stageKey] === undefined) dates[stageKey] = a.ts;
+  });
+  return dates;
 }
 
 /* ---------------- Programme-wise aggregation (Individual Counsellor / Manager dashboards) ---------------- */

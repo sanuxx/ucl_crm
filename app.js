@@ -95,6 +95,8 @@ function markNotificationsRead() {
 const NAV_PERMS = {
   "commission": ["Commission Admin", "Finance", "Manager", "Head of Marketing", "CEO", "Admin"],
   "reports": ["Manager", "Head of Marketing", "CEO", "Admin", "Commission Admin", "Counsellor"],
+  "not-qualified": ["Counsellor", "Manager", "Head of Marketing", "CEO", "Admin"],
+  "lead-source-dashboard": ["Head of Marketing", "CEO", "Admin"],
   "audit": ["Admin", "Head of Marketing", "CEO"],
   "admin": ["Admin"],
   "agent-portal": ["Agent", "Manager", "Admin"],
@@ -119,11 +121,13 @@ function router() {
   const renderers = {
     dashboard: renderDashboard,
     leads: renderLeads,
+    "not-qualified": renderNotQualified,
     pipeline: renderPipeline,
     followups: renderFollowups,
     inquiries: renderInquiries,
     commission: renderCommission,
     reports: renderReports,
+    "lead-source-dashboard": renderLeadSourceDashboard,
     intakes: renderIntakes,
     "agent-portal": renderAgentPortal,
     audit: renderAudit,
@@ -230,6 +234,31 @@ function renderDashboard(root) {
       ? `<div class="empty-state">No dashboard widgets are enabled for the ${esc(currentRole())} role (UC49).</div>` : ""}
 
     ${renderRoleStatusDashboard(leads)}
+    ${renderPipelineTargetDashboard(leads)}
+  `;
+}
+
+// Head of Marketing dashboard — Target vs Actual across the defined pipeline stages.
+function renderPipelineTargetDashboard(leads) {
+  if (!["Head of Marketing", "CEO", "Admin"].includes(currentRole())) return "";
+  const rows = stages().map(s => ({
+    stage: s,
+    target: stageTarget(s),
+    actual: leads.filter(l => l.stage === s && !l.deactivated).length
+  }));
+  return `
+    <h2 style="margin:26px 0 4px">Pipeline Target vs Actual<span class="pill">Head of Marketing</span></h2>
+    <div class="card">
+      <h3>Performance Across Pipeline Stages</h3>
+      ${simpleBarChart(rows.flatMap(r => [
+        { label: stageLabel(r.stage) + " (Target)", value: r.target, color: "#94a3b8" },
+        { label: stageLabel(r.stage) + " (Actual)", value: r.actual, color: stageColor(r.stage) }
+      ]))}
+      <table style="margin-top:14px"><thead><tr><th>Stage</th><th>Target</th><th>Actual</th><th>Variance</th><th>% of Target</th></tr></thead>
+      <tbody>${rows.map(r => `<tr><td>${stageBadge(r.stage)}</td><td>${r.target}</td><td>${r.actual}</td>
+        <td style="color:${r.actual - r.target >= 0 ? 'var(--green)' : 'var(--red)'}">${r.actual - r.target >= 0 ? "+" : ""}${r.actual - r.target}</td>
+        <td>${r.target ? Math.round(r.actual / r.target * 100) : 0}%</td></tr>`).join("")}</tbody></table>
+    </div>
   `;
 }
 
@@ -260,6 +289,12 @@ function renderRoleStatusDashboard(leads) {
     actual: actualEnrolments(t.counsellorId, t.intakeId)
   }));
 
+  // Counsellor Application Dashboard — applications received (form Submitted/Reviewed), by intake
+  const applicationsReceived = leads.filter(l => !l.deactivated && ["Submitted", "Reviewed"].includes((l.applicationForm || {}).status));
+  const byIntake = DB.intakes.map(i => ({ label: i.name, value: applicationsReceived.filter(l => l.intakeId === i.id).length }))
+    .concat([{ label: "No Intake Assigned", value: applicationsReceived.filter(l => !l.intakeId).length }])
+    .filter(r => r.value > 0);
+
   return `
     <h2 style="margin:26px 0 4px">${esc(title)}<span class="pill">${esc(currentRole())}</span></h2>
     <div class="two-col">
@@ -281,6 +316,11 @@ function renderRoleStatusDashboard(leads) {
           <div style="flex:1"><div style="font-size:24px;font-weight:700;color:var(--amber)">${offerCond}</div><div class="small-muted">Conditional</div></div>
           <div style="flex:1"><div style="font-size:24px;font-weight:700;color:var(--green)">${offerUncond}</div><div class="small-muted">Unconditional</div></div>
         </div>
+      </div>
+      <div class="card">
+        <h3>Applications Received${suffix} <span class="pill">Counsellor Application Dashboard</span></h3>
+        ${byIntake.length ? simpleBarChart(byIntake) : `<p class="small-muted">No application forms submitted yet for the relevant intakes.</p>`}
+        <p class="small-muted" style="margin-top:8px">Total: <b>${applicationsReceived.length}</b> application(s) received (status Submitted or Reviewed).</p>
       </div>
       <div class="card">
         <h3>Target vs Actual${suffix} <span class="pill">UC3</span></h3>
@@ -381,6 +421,49 @@ function filteredLeadsForTab() {
   return leads;
 }
 
+/* ============================================================
+   NOT-QUALIFIED LEADS — leads that don't meet the required criteria.
+   Separate tab from the main pipeline so they can be reviewed/managed on
+   their own, with a stub to push a lead back into the qualified pipeline
+   once that workflow is built out.
+   ============================================================ */
+function renderNotQualified(root) {
+  const leads = visibleLeads().filter(isNotQualifiedLead);
+  root.innerHTML = `
+    <div class="page-header">
+      <div><h1>Not-Qualified Leads</h1><div class="sub">${leads.length} lead(s) that don't currently meet the qualification criteria (${esc(currentRole())} view)</div></div>
+    </div>
+    <div class="notice info">ℹ️ Leads land here automatically once their Detailed Status is set to one of the admin-configured "Not Qualified Lead" statuses. Use "Push to Qualified" to move a lead back into the active pipeline once it meets the criteria.</div>
+    ${leads.length ? `
+    <div class="table-wrap card">
+    <table>
+      <thead><tr><th>Name</th><th>Source</th><th>Mode of Contact</th><th>Reason (Detailed Status)</th><th>Assigned To</th><th>Created</th><th></th></tr></thead>
+      <tbody>
+        ${leads.map(l => `
+          <tr>
+            <td><a href="javascript:void(0)" onclick="openLeadModal('${l.id}')"><b>${esc(l.name)}</b></a><div class="small-muted">${esc(l.mobile)}</div></td>
+            <td>${esc(l.leadSource)}</td>
+            <td>${esc(l.modeOfContact) || "<span class='small-muted'>—</span>"}</td>
+            <td>${esc(l.detailedStatus) || "<span class='small-muted'>—</span>"}</td>
+            <td>${esc(userName(l.assignedTo))}</td>
+            <td>${fmtDate(l.createdAt)}</td>
+            <td style="white-space:nowrap">
+              <button class="btn ghost sm" onclick="openLeadModal('${l.id}')">Open</button>
+              <button class="btn sm secondary" onclick="pushToQualified('${l.id}')" title="Coming soon">Push to Qualified</button>
+            </td>
+          </tr>`).join("")}
+      </tbody>
+    </table>
+    </div>` : `<div class="empty-state">No not-qualified leads in your view right now.</div>`}
+  `;
+}
+// Stub for a future workflow — re-qualifying a lead and moving it back into the active
+// pipeline is out of scope for this pass, so it's surfaced here as a clearly-labelled
+// placeholder rather than silently doing nothing.
+function pushToQualified(leadId) {
+  toast("Push to Qualified is coming in a future release — this lead is not yet moved.", "warn");
+}
+
 /* ---------------- Saved segments (UC28) ---------------- */
 function openSaveSegmentModal() {
   openModal(`
@@ -459,12 +542,14 @@ function saveExhibitionLead() {
   const mobile = document.getElementById("ex_mobile").value.trim();
   if (!name || !mobile) { toast("Name and mobile required.", "error"); return; }
   DB.leads.push({
-    id: uid("lead"), name, mobile, email: document.getElementById("ex_email").value.trim(), leadSource: "Exhibition",
-    studentId: "", staffName: "", university: "", program: document.getElementById("ex_program").value, district: "",
-    districtOther: "", examType: "Local A/L", resultsPending: true, olResult: "", alResult: "", languageTest: "None", languageScore: "",
+    id: uid("lead"), name, mobile, email: document.getElementById("ex_email").value.trim(), leadSource: "Exhibition", modeOfContact: "",
+    studentId: "", staffName: "", university: "", program: document.getElementById("ex_program").value, country: "Sri Lanka", district: "",
+    districtOther: "", previousSchool: "", priorQualificationType: "", bachelorsDegree: "", bachelorsUniversity: "",
+    examType: "Local A/L", resultsPending: true, olResult: "", alResult: "", languageTest: "None", languageScore: "",
     stage: "Open", deactivated: false, deactivationReason: "", lossReason: "", assignedTo: rand(DB.users.filter(u => u.role === "Counsellor").map(u => u.id)),
     intakeId: "", domain: rand(picklist('domains')), isReferral: false, referralType: "", agentId: "",
     checklist: makeChecklist(), commissionStatus: "Pending", tuitionFee: 850000, amountPaid: 0, outstandingBalance: 0, nextFollowUp: addDaysStr(todayStr(), 1), followUpLog: [], escalated: false,
+    applicationForm: defaultApplicationForm(), tasks: [],
     createdAt: new Date().toISOString(), activity: [{ ts: new Date().toISOString(), user: getCurrentUser().name, type: "Create", text: "Captured via Exhibition minimal-data form (UC75)" }]
   });
   logAudit("CREATE", "Lead", `Exhibition lead: ${name}`);
@@ -618,12 +703,14 @@ function generateSampleImport() {
     if (importType === "Leads") {
       const lead = {
         id: uid("lead"), name: `${first} ${last}`, mobile: "07" + Math.floor(10000000 + Math.random() * 89999999),
-        email: `${first}.${last}@bulk.example.com`.toLowerCase(), leadSource: "Bulk Upload", studentId: "", staffName: "",
-        university: rand(picklist('universities')), program: rand(picklist('programs')), district: rand(picklist('districts')), examType: "Local A/L",
+        email: `${first}.${last}@bulk.example.com`.toLowerCase(), leadSource: "Bulk Upload", modeOfContact: "", studentId: "", staffName: "",
+        university: rand(picklist('universities')), program: rand(picklist('programs')), country: "Sri Lanka", district: rand(picklist('districts')),
+        previousSchool: "", priorQualificationType: "", bachelorsDegree: "", bachelorsUniversity: "", examType: "Local A/L",
         resultsPending: true, olResult: "", alResult: "", languageTest: "None", languageScore: "",
         stage: "Open", deactivated: false, deactivationReason: "", lossReason: "", assignedTo: rand(DB.users.filter(u => u.role === "Counsellor").map(u => u.id)),
         intakeId: "", domain: rand(picklist('domains')), isReferral: false, referralType: "", agentId: "",
         checklist: makeChecklist(), commissionStatus: "Pending", tuitionFee: 850000, amountPaid: 0, outstandingBalance: 0, nextFollowUp: addDaysStr(todayStr(), 1), followUpLog: [], escalated: false,
+        applicationForm: defaultApplicationForm(), tasks: [],
         createdAt: new Date().toISOString(), activity: [{ ts: new Date().toISOString(), user: "System", type: "Create", text: "Bulk imported (UC24/UC53), auto-classified to Open" }]
       };
       DB.leads.push(lead);
@@ -652,12 +739,14 @@ function processCsvUpload() {
       if (!row.name || !row.mobile) { failed++; continue; }
       if (importType === "Leads") {
         DB.leads.push({
-          id: uid("lead"), name: row.name, mobile: row.mobile, email: row.email || "", leadSource: "Bulk Upload",
-          studentId: "", staffName: "", university: row.university || "", program: row.program || "", district: "Other",
+          id: uid("lead"), name: row.name, mobile: row.mobile, email: row.email || "", leadSource: "Bulk Upload", modeOfContact: "",
+          studentId: "", staffName: "", university: row.university || "", program: row.program || "", country: "Sri Lanka", district: "Other",
+          previousSchool: "", priorQualificationType: "", bachelorsDegree: "", bachelorsUniversity: "",
           examType: "Local A/L", resultsPending: true, olResult: "", alResult: "", languageTest: "None", languageScore: "",
           stage: "Open", deactivated: false, deactivationReason: "", lossReason: "", assignedTo: rand(DB.users.filter(u => u.role === "Counsellor").map(u => u.id)),
           intakeId: "", domain: rand(picklist('domains')), isReferral: false, referralType: "", agentId: "",
           checklist: makeChecklist(), commissionStatus: "Pending", tuitionFee: 850000, amountPaid: 0, outstandingBalance: 0, nextFollowUp: addDaysStr(todayStr(), 1), followUpLog: [], escalated: false,
+          applicationForm: defaultApplicationForm(), tasks: [],
           createdAt: new Date().toISOString(), activity: [{ ts: new Date().toISOString(), user: "System", type: "Create", text: "Bulk imported from CSV" }]
         });
       } else {
@@ -680,12 +769,14 @@ function openLeadModal(leadId) {
   const isNew = !leadId;
   const lead = isNew ? null : DB.leads.find(l => l.id === leadId);
   window.__editingLead = isNew ? {
-    id: null, name: "", mobile: "", email: "", leadSource: "Student", digitalSubSource: "",
-    studentId: "", staffName: "", university: "", program: "", district: "", districtOther: "",
+    id: null, name: "", mobile: "", email: "", leadSource: "Student", modeOfContact: picklist('modesOfContact')[0] || "", digitalSubSource: "",
+    studentId: "", staffName: "", university: "", program: "", country: "Sri Lanka", district: "", districtOther: "",
+    previousSchool: "", priorQualificationType: "", bachelorsDegree: "", bachelorsUniversity: "",
     examType: "Local A/L", resultsPending: false, olResult: "", alResult: "", languageTest: "None", languageScore: "",
     stage: "Open", deactivated: false, deactivationReason: "", lossReason: "", assignedTo: DB.users.find(u => u.role === "Counsellor").id,
     intakeId: "", domain: picklist('domains')[0], isReferral: false, referralType: "", agentId: "",
     checklist: makeChecklist(), commissionStatus: "Pending", tuitionFee: 850000, amountPaid: 0, outstandingBalance: 0, nextFollowUp: addDaysStr(todayStr(), 1), followUpLog: [], escalated: false,
+    applicationForm: defaultApplicationForm(), tasks: [],
     createdAt: new Date().toISOString(), activity: []
   } : JSON.parse(JSON.stringify(lead));
 
@@ -698,12 +789,12 @@ function renderLeadModal() {
   const isNew = !L.id;
   const tab = window.__leadModalTab;
 
-  const tabs = isNew ? [["details", "Details"]] : [["details", "Details"], ["academic", "Academic"], ["checklist", "Checklist"], ["timeline", "Timeline"]];
+  const tabs = isNew ? [["details", "Details"]] : [["details", "Details"], ["academic", "Academic"], ["checklist", "Checklist"], ["notes", "Notes & Tasks"], ["application", "Application"], ["timeline", "Timeline"]];
 
   openModal(`
     <div class="modal-header"><h2>${isNew ? "New Lead (UC21/UC22)" : esc(L.name)}</h2><button class="close-x" onclick="closeModal()">&times;</button></div>
     <div class="modal-body">
-      ${!isNew ? `<div style="margin-bottom:10px">${stageBadge(L.stage)} ${L.deactivated ? "<span class='badge deactivated'>Deactivated</span>" : ""} ${L.resultsPending ? "<span class='badge pending'>Pending Results</span>" : ""}</div>` : ""}
+      ${!isNew ? `<div style="margin-bottom:10px">${stageBadge(L.stage)} ${L.deactivated ? "<span class='badge deactivated'>Deactivated</span>" : ""} ${L.resultsPending ? "<span class='badge pending'>Pending Results</span>" : ""} ${applicationStatusBadge(L.applicationForm)}</div>` : ""}
       <div class="detail-tabs">${tabs.map(([k, label]) => `<div class="tab ${tab === k ? "active" : ""}" onclick="window.__leadModalTab='${k}';renderLeadModal();">${label}</div>`).join("")}</div>
       <div id="leadModalTabContent"></div>
     </div>
@@ -729,6 +820,9 @@ function renderLeadModalTab() {
         <div class="field"><label>Lead Source</label>
           <select id="f_source">${picklist('leadSources').map(s => `<option ${L.leadSource === s ? "selected" : ""}>${s}</option>`).join("")}</select>
         </div>
+        <div class="field"><label>Mode of Contact</label>
+          <select id="f_modeOfContact"><option value="">-- Select --</option>${picklist('modesOfContact').map(m => `<option ${L.modeOfContact === m ? "selected" : ""}>${m}</option>`).join("")}</select>
+        </div>
         <div class="field ${L.leadSource === "Digital" ? "" : "hidden"}" id="wrap_digitalSub"><label>Digital Sub-Source</label>
           <select id="f_digitalSub">${picklist('digitalSubSources').map(s => `<option ${L.digitalSubSource === s ? "selected" : ""}>${s}</option>`).join("")}</select>
         </div>
@@ -737,10 +831,13 @@ function renderLeadModalTab() {
         <div class="field"><label>School / Company</label><input id="f_schoolOrCompany" value="${esc(L.schoolOrCompany || "")}"></div>
         <div class="field"><label>University</label><select id="f_university"><option value="">-- Select --</option>${picklist('universities').map(u => `<option ${L.university === u ? "selected" : ""}>${u}</option>`).join("")}</select></div>
         <div class="field"><label>Program</label><select id="f_program"><option value="">-- Select --</option>${picklist('programs').map(p => `<option ${L.program === p ? "selected" : ""}>${p}</option>`).join("")}</select></div>
-        <div class="field"><label>District <span class="pill">UC58</span></label>
+        <div class="field"><label>Country</label>
+          <select id="f_country">${picklist('countries').map(c => `<option ${L.country === c ? "selected" : ""}>${c}</option>`).join("")}</select>
+        </div>
+        <div class="field ${L.country === "Sri Lanka" ? "" : "hidden"}" id="wrap_district"><label>District <span class="pill">UC58</span></label>
           <select id="f_district">${picklist('districts').map(d => `<option ${L.district === d ? "selected" : ""}>${d}</option>`).join("")}</select>
         </div>
-        <div class="field ${L.district === "Other" ? "" : "hidden"}" id="wrap_districtOther"><label>Specify District <span class="pill">UC58 - AF1</span></label><input id="f_districtOther" value="${esc(L.districtOther || "")}" placeholder="Enter district manually"></div>
+        <div class="field ${L.country === "Sri Lanka" && L.district === "Other" ? "" : "hidden"}" id="wrap_districtOther"><label>Specify District <span class="pill">UC58 - AF1</span></label><input id="f_districtOther" value="${esc(L.districtOther || "")}" placeholder="Enter district manually"></div>
         <div class="field"><label>Intake Cycle</label><select id="f_intake"><option value="">-- None --</option>${DB.intakes.map(i => `<option value="${i.id}" ${L.intakeId === i.id ? "selected" : ""}>${i.name}</option>`).join("")}</select></div>
         <div class="field"><label>Assigned Counsellor</label>
           <select id="f_assigned" ${!canTransferLeads() && !isNew ? "disabled" : ""}>
@@ -778,41 +875,84 @@ function renderLeadModalTab() {
       L.district = e.target.value;
       document.getElementById("wrap_districtOther").classList.toggle("hidden", L.district !== "Other");
     };
+    document.getElementById("f_country").onchange = e => {
+      L.country = e.target.value;
+      // Country field (new lead field) — district only applies while Sri Lanka is selected;
+      // any other country leaves it blank rather than showing an irrelevant Sri Lankan list.
+      if (L.country !== "Sri Lanka") { L.district = ""; L.districtOther = ""; }
+      document.getElementById("wrap_district").classList.toggle("hidden", L.country !== "Sri Lanka");
+      document.getElementById("wrap_districtOther").classList.toggle("hidden", !(L.country === "Sri Lanka" && L.district === "Other"));
+    };
+    document.getElementById("f_program").onchange = e => {
+      L.program = e.target.value; // Program-Based Field Configuration — Academic tab depends on program type
+    };
   }
 
   if (tab === "academic") {
-    body.innerHTML = `
-      <p class="small-muted">Capture academic results (O/L, A/L, Language) with mandatory-field enforcement <span class="pill">UC55</span></p>
-      <div class="checkbox-row"><input type="checkbox" id="f_pending" ${L.resultsPending ? "checked" : ""}><label style="margin:0">Results Pending <span class="pill">UC56</span></label></div>
-      <p class="small-muted">When checked, mandatory validations for results are relaxed, but the lead cannot progress to Converted stage.</p>
-      <div class="field"><label>Exam Type <span class="pill">UC57</span></label>
-        <select id="f_examType"><option ${L.examType === "Local A/L" ? "selected" : ""}>Local A/L</option><option ${L.examType === "London A/L" ? "selected" : ""}>London A/L</option></select>
-      </div>
-      ${gradeTableHTML("ol", L)}
-      ${gradeTableHTML("al", L)}
+    const pType = programType(L.program);
+    // Program-Based Field Configuration — the fields shown here depend on the selected Program's
+    // type (Admin → Fields & Picklists → Program Types), so only relevant academic info is captured.
+    const langBlock = `
       <hr class="sep">
       <div class="grid-2">
         <div class="field"><label>Language Test</label><select id="f_langTest"><option ${L.languageTest === "IELTS" ? "selected" : ""}>IELTS</option><option ${L.languageTest === "TOEFL" ? "selected" : ""}>TOEFL</option><option ${L.languageTest === "PTE" ? "selected" : ""}>PTE</option><option ${L.languageTest === "None" ? "selected" : ""}>None</option></select></div>
         <div class="field"><label>Score</label><input id="f_langScore" value="${esc(L.languageScore)}" placeholder="e.g. 6.5"></div>
-      </div>
-    `;
-    bindGradeRowHandlers();
-    document.getElementById("f_pending").onchange = e => { L.resultsPending = e.target.checked; renderLeadModalTab(); };
-    document.getElementById("f_examType").onchange = e => {
-      const newVal = e.target.value;
-      // UC57 - AF1: A/L grades are scale-specific, so switching exam type invalidates them
-      const hasAL = (L.alSubjects || []).some(r => r.grade);
-      if (hasAL && newVal !== L.examType) {
-        if (!confirm(`Changing exam type will clear the ${(L.alSubjects || []).length} recorded A/L grade(s), since ${newVal} uses a different grading scale (UC57 - AF1). Continue?`)) {
-          e.target.value = L.examType;
-          return;
+      </div>`;
+
+    if (pType === "Master's") {
+      body.innerHTML = `
+        <p class="small-muted">Master's applicant — prior degree details replace O/L / A/L capture. <span class="pill">Program-Based Fields</span></p>
+        <div class="grid-2">
+          <div class="field"><label class="required">Bachelor's Degree</label><input id="f_bachelorsDegree" value="${esc(L.bachelorsDegree || "")}" placeholder="e.g. BSc Computing"></div>
+          <div class="field"><label class="required">Bachelor's University</label>
+            <select id="f_bachelorsUniversity"><option value="">-- Select --</option>${picklist('universities').map(u => `<option ${L.bachelorsUniversity === u ? "selected" : ""}>${u}</option>`).join("")}</select>
+          </div>
+        </div>
+        ${langBlock}
+      `;
+    } else if (pType === "Foundation") {
+      body.innerHTML = `
+        <p class="small-muted">Foundation applicant — previous school and a single qualification (O/L or A/L) are captured. <span class="pill">Program-Based Fields</span></p>
+        <div class="grid-2">
+          <div class="field"><label class="required">Previous School</label><input id="f_previousSchool" value="${esc(L.previousSchool || "")}"></div>
+          <div class="field"><label class="required">Qualification</label>
+            <select id="f_priorQualificationType"><option value="">-- Select --</option><option ${L.priorQualificationType === "O/L" ? "selected" : ""}>O/L</option><option ${L.priorQualificationType === "A/L" ? "selected" : ""}>A/L</option></select>
+          </div>
+        </div>
+        <div id="foundationGradeWrap">${L.priorQualificationType ? gradeTableHTML(L.priorQualificationType === "O/L" ? "ol" : "al", L) : "<p class='small-muted'>Select a qualification to record grades.</p>"}</div>
+        ${langBlock}
+      `;
+      document.getElementById("f_priorQualificationType").onchange = e => { L.priorQualificationType = e.target.value; renderLeadModalTab(); };
+    } else {
+      body.innerHTML = `
+        <p class="small-muted">Capture academic results (O/L, A/L, Language) with mandatory-field enforcement <span class="pill">UC55</span></p>
+        <div class="checkbox-row"><input type="checkbox" id="f_pending" ${L.resultsPending ? "checked" : ""}><label style="margin:0">Results Pending <span class="pill">UC56</span></label></div>
+        <p class="small-muted">When checked, mandatory validations for results are relaxed, but the lead cannot progress to Converted stage.</p>
+        <div class="field"><label>Exam Type <span class="pill">UC57</span></label>
+          <select id="f_examType"><option ${L.examType === "Local A/L" ? "selected" : ""}>Local A/L</option><option ${L.examType === "London A/L" ? "selected" : ""}>London A/L</option></select>
+        </div>
+        ${gradeTableHTML("ol", L)}
+        ${gradeTableHTML("al", L)}
+        ${langBlock}
+      `;
+      document.getElementById("f_pending").onchange = e => { L.resultsPending = e.target.checked; renderLeadModalTab(); };
+      document.getElementById("f_examType").onchange = e => {
+        const newVal = e.target.value;
+        // UC57 - AF1: A/L grades are scale-specific, so switching exam type invalidates them
+        const hasAL = (L.alSubjects || []).some(r => r.grade);
+        if (hasAL && newVal !== L.examType) {
+          if (!confirm(`Changing exam type will clear the ${(L.alSubjects || []).length} recorded A/L grade(s), since ${newVal} uses a different grading scale (UC57 - AF1). Continue?`)) {
+            e.target.value = L.examType;
+            return;
+          }
+          L.alSubjects = [];
+          L.alResult = "";
         }
-        L.alSubjects = [];
-        L.alResult = "";
-      }
-      L.examType = newVal;
-      renderLeadModalTab();
-    };
+        L.examType = newVal;
+        renderLeadModalTab();
+      };
+    }
+    bindGradeRowHandlers();
   }
 
   if (tab === "checklist") {
@@ -826,6 +966,92 @@ function renderLeadModalTab() {
       `).join("")}
     `;
     document.querySelectorAll(".chkItem").forEach(cb => cb.onchange = e => { L.checklist[e.target.dataset.idx].done = e.target.checked; });
+  }
+
+  if (tab === "notes") {
+    L.tasks = L.tasks || [];
+    const sorted = L.tasks.slice().sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    body.innerHTML = `
+      <p class="small-muted">Notes, remarks and tasks for this lead, recorded per pipeline stage — with a follow-up date/time so they surface as reminders on the Follow-Ups page.</p>
+      <div class="card" style="box-shadow:none;margin-bottom:16px">
+        <h3 style="margin-bottom:8px">Log a Note / Task</h3>
+        <div class="grid-2">
+          <div class="field"><label>Stage</label><select id="tsk_stage">${stages().map(s => `<option value="${s}" ${s === L.stage ? "selected" : ""}>${esc(stageLabel(s))}</option>`).join("")}</select></div>
+          <div class="field"><label>Follow-Up Date &amp; Time <span class="pill">optional — creates a reminder</span></label><input type="datetime-local" id="tsk_due"></div>
+        </div>
+        <div class="field"><label>Note / Task</label><textarea id="tsk_note" rows="2" placeholder="e.g. Called to confirm interest, follow up next week"></textarea></div>
+        <button class="btn sm" onclick="addStageTask()">+ Add Note / Task</button>
+      </div>
+      ${sorted.length ? sorted.map(t => `
+        <div class="checklist-item" style="align-items:flex-start">
+          <input type="checkbox" class="taskDoneChk" data-id="${t.id}" ${t.done ? "checked" : ""}>
+          <div style="flex:1">
+            <div>${stageBadge(t.stage)} ${t.dueAt ? taskStatusPill(t) : ""} <span class="small-muted">${fmtDateTime(t.createdAt)} by ${esc(t.createdBy)}</span></div>
+            <div style="margin-top:2px">${esc(t.note)}</div>
+            ${t.dueAt ? `<div class="small-muted">Due: ${fmtDateTime(t.dueAt)}</div>` : ""}
+          </div>
+          <button class="btn sm ghost" onclick="removeStageTask('${t.id}')" title="Remove">✕</button>
+        </div>`).join("") : `<div class="empty-state">No notes or tasks recorded yet.</div>`}
+    `;
+    document.querySelectorAll(".taskDoneChk").forEach(cb => cb.onchange = e => {
+      const t = L.tasks.find(x => x.id === e.target.dataset.id);
+      if (t) t.done = e.target.checked;
+      commitLeadEdit();
+      renderLeadModalTab();
+    });
+  }
+
+  if (tab === "application") {
+    L.applicationForm = L.applicationForm || defaultApplicationForm();
+    const af = L.applicationForm;
+    body.innerHTML = `
+      <p class="small-muted">Application form status is visible here on the lead record. Sending, review and offer/payment-plan dispatch are simulated the same way conversion emails are elsewhere in this demo — no real mail server (see README "Demo limitations").</p>
+      <div class="card" style="box-shadow:none;margin-bottom:16px">
+        <h3>Application Form ${applicationStatusBadge(af)}</h3>
+        ${af.sentAt ? `<p class="small-muted">Sent ${fmtDateTime(af.sentAt)}${af.submittedAt ? " · Submitted " + fmtDateTime(af.submittedAt) : ""}${af.reviewedAt ? " · Reviewed " + fmtDateTime(af.reviewedAt) + " by " + esc(af.reviewedBy) : ""}</p>` : `<p class="small-muted">Not yet sent to the student.</p>`}
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+          <button class="btn sm ${af.status === "Not Sent" ? "" : "secondary"}" onclick="sendApplicationForm()">${af.status === "Not Sent" ? "📧 Send Application Form" : "📧 Resend Application Form"}</button>
+          ${af.status === "Sent" ? `<button class="btn sm secondary" onclick="markApplicationSubmitted()">Mark as Submitted (received from student)</button>` : ""}
+        </div>
+      </div>
+
+      ${af.status === "Submitted" || af.status === "Reviewed" ? `
+      <div class="card" style="box-shadow:none;margin-bottom:16px">
+        <h3>Review Submitted Application <span class="pill">verify accuracy</span></h3>
+        <p class="small-muted">Edit any field the student got wrong, then confirm the review. This mirrors the student's own submission back onto the lead record.</p>
+        <div class="grid-2">
+          <div class="field"><label>Full Name</label><input id="af_name" value="${esc(L.name)}"></div>
+          <div class="field"><label>Mobile</label><input id="af_mobile" value="${esc(L.mobile)}"></div>
+          <div class="field"><label>Email</label><input id="af_email" value="${esc(L.email)}"></div>
+          <div class="field"><label>Program</label><select id="af_program">${picklist('programs').map(p => `<option ${L.program === p ? "selected" : ""}>${p}</option>`).join("")}</select></div>
+          <div class="field"><label>University</label><select id="af_university"><option value="">-- Select --</option>${picklist('universities').map(u => `<option ${L.university === u ? "selected" : ""}>${u}</option>`).join("")}</select></div>
+          <div class="field"><label>Academic Summary</label><input id="af_academic" value="${esc(programType(L.program) === "Master's" ? L.bachelorsDegree + (L.bachelorsUniversity ? " — " + L.bachelorsUniversity : "") : (L.olResult || L.alResult ? [L.olResult, L.alResult].filter(Boolean).join(" / ") : ""))}" placeholder="e.g. 3A 2B (O/L)"></div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button class="btn sm" onclick="saveApplicationReview(${af.status !== "Reviewed"})">${af.status === "Reviewed" ? "Save Corrections" : "✓ Confirm Reviewed"}</button>
+        </div>
+      </div>` : ""}
+
+      ${af.status === "Reviewed" ? `
+      <div class="card" style="box-shadow:none;margin-bottom:16px">
+        <h3>Offer Letter ${af.offerLetter.status === "Issued" ? `<span class="badge converted">Issued — ${esc(af.offerLetter.type)}</span>` : `<span class="badge closed">Not Issued</span>`}</h3>
+        ${af.offerLetter.status === "Issued" ? `<p class="small-muted">Issued ${fmtDateTime(af.offerLetter.issuedAt)}</p>` : `
+          <div class="field" style="max-width:280px"><label>Offer Type</label><select id="af_offerType">${OFFER_TYPES.map(t => `<option>${t}</option>`).join("")}</select></div>
+          <button class="btn sm" onclick="issueOfferLetter()">🎓 Issue Offer Letter</button>`}
+      </div>
+
+      <div class="card" style="box-shadow:none;margin-bottom:16px">
+        <h3>Payment Plan ${af.paymentPlan.status === "Sent" ? `<span class="badge converted">Sent</span>` : `<span class="badge closed">Not Sent</span>`}</h3>
+        <div id="paymentPlanRows">
+          ${(af.paymentPlan.installments.length ? af.paymentPlan.installments : [{ label: "Registration Fee", amount: 25000, dueDate: todayStr() }]).map((row, i) => `
+            <div class="grid-2" data-row="${i}">
+              <div class="field"><label>Installment</label><input class="pp_label" value="${esc(row.label)}"></div>
+              <div class="field"><label>Amount (LKR)</label><input class="pp_amount" type="number" min="0" value="${row.amount}"></div>
+            </div>`).join("")}
+        </div>
+        ${af.paymentPlan.status === "Sent" ? `<p class="small-muted">Sent ${fmtDateTime(af.paymentPlan.sentAt)}</p>` : `<button class="btn sm secondary" onclick="addPaymentPlanRow()">+ Add Installment</button> <button class="btn sm" onclick="sendPaymentPlan()">💳 Send Payment Plan</button>`}
+      </div>` : ""}
+    `;
   }
 
   if (tab === "timeline") {
@@ -906,6 +1132,116 @@ function bindGradeRowHandlers() {
   });
 }
 
+// Commits an in-progress modal action (one that should persist immediately, like a stage change
+// or a "Send" action) back into DB.leads — the same pattern attemptStageChange() uses.
+function commitLeadEdit() {
+  const L = window.__editingLead;
+  if (!L.id) return;
+  const existing = DB.leads.find(l => l.id === L.id);
+  if (existing) Object.assign(existing, L);
+  saveDB();
+}
+
+/* ============================================================
+   Student Application Form Management
+   Send / review-and-edit / offer letter / payment plan — simulated the same way the
+   existing conversion email (UC35/UC36) is: logged + toasted, no real mail server.
+   ============================================================ */
+function sendApplicationForm() {
+  const L = window.__editingLead;
+  if (!L.email) { toast("Cannot send — no email address on file for this lead.", "error"); return; }
+  L.applicationForm = L.applicationForm || defaultApplicationForm();
+  L.applicationForm.status = "Sent";
+  L.applicationForm.sentAt = new Date().toISOString();
+  addActivity(L, "Automation", `Application form sent to ${L.email}`);
+  commitLeadEdit();
+  toast(`Application form sent to ${L.email}.`, "success");
+  renderLeadModalTab();
+}
+function markApplicationSubmitted() {
+  const L = window.__editingLead;
+  L.applicationForm.status = "Submitted";
+  L.applicationForm.submittedAt = new Date().toISOString();
+  addActivity(L, "Update", "Application form received from student — pending counsellor review");
+  commitLeadEdit();
+  toast("Application marked as submitted.", "success");
+  renderLeadModalTab();
+}
+function saveApplicationReview(markReviewed) {
+  const L = window.__editingLead;
+  L.name = document.getElementById("af_name").value.trim() || L.name;
+  L.mobile = document.getElementById("af_mobile").value.trim() || L.mobile;
+  L.email = document.getElementById("af_email").value.trim();
+  L.program = document.getElementById("af_program").value;
+  L.university = document.getElementById("af_university").value;
+  if (markReviewed) {
+    L.applicationForm.status = "Reviewed";
+    L.applicationForm.reviewedAt = new Date().toISOString();
+    L.applicationForm.reviewedBy = getCurrentUser().name;
+    addActivity(L, "Update", `Application reviewed and verified by ${getCurrentUser().name}`);
+  } else {
+    addActivity(L, "Update", "Application corrections saved after review");
+  }
+  commitLeadEdit();
+  toast(markReviewed ? "Application reviewed." : "Corrections saved.", "success");
+  renderLeadModalTab();
+}
+function issueOfferLetter() {
+  const L = window.__editingLead;
+  const type = document.getElementById("af_offerType").value;
+  L.applicationForm.offerLetter = { status: "Issued", type, issuedAt: new Date().toISOString() };
+  addActivity(L, "Automation", `${type} offer letter issued${L.email ? " and emailed to " + L.email : ""}`);
+  commitLeadEdit();
+  toast(`${type} offer letter issued.`, "success");
+  renderLeadModalTab();
+}
+function addPaymentPlanRow() {
+  document.getElementById("paymentPlanRows").insertAdjacentHTML("beforeend", `
+    <div class="grid-2">
+      <div class="field"><label>Installment</label><input class="pp_label" value="Installment"></div>
+      <div class="field"><label>Amount (LKR)</label><input class="pp_amount" type="number" min="0" value="0"></div>
+    </div>`);
+}
+function sendPaymentPlan() {
+  const L = window.__editingLead;
+  const labels = document.querySelectorAll(".pp_label");
+  const amounts = document.querySelectorAll(".pp_amount");
+  const installments = [];
+  labels.forEach((el, i) => installments.push({ label: el.value.trim() || `Installment ${i + 1}`, amount: Number(amounts[i].value || 0), dueDate: isoDateOffset(i * 30) }));
+  L.applicationForm.paymentPlan = { status: "Sent", installments, sentAt: new Date().toISOString() };
+  addActivity(L, "Automation", `Payment plan (${installments.length} installment(s), total ${money(installments.reduce((s, r) => s + r.amount, 0))}) sent${L.email ? " to " + L.email : ""}`);
+  commitLeadEdit();
+  toast("Payment plan sent.", "success");
+  renderLeadModalTab();
+}
+
+/* ---------------- Follow-Up Notes & Task Management (per pipeline stage) ---------------- */
+function taskStatusPill(task) {
+  const s = taskStatus(task);
+  const cls = s === "Overdue" ? "danger" : s === "Due Soon" ? "" : "secondary";
+  const color = s === "Overdue" ? "var(--red)" : s === "Due Soon" ? "var(--amber)" : "var(--green)";
+  return `<span class="small-muted" style="color:${color};font-weight:600">${s}</span>`;
+}
+function addStageTask() {
+  const L = window.__editingLead;
+  const note = document.getElementById("tsk_note").value.trim();
+  if (!note) { toast("Enter a note before saving.", "error"); return; }
+  const stage = document.getElementById("tsk_stage").value;
+  const due = document.getElementById("tsk_due").value; // datetime-local, e.g. 2026-08-21T14:00
+  L.tasks = L.tasks || [];
+  L.tasks.push({ id: uid("task"), stage, note, dueAt: due || "", done: false, createdAt: new Date().toISOString(), createdBy: getCurrentUser().name });
+  addActivity(L, "Note", `Note logged for ${stageLabel(stage)}${due ? ` — follow-up reminder set for ${fmtDateTime(due)}` : ""}`);
+  commitLeadEdit();
+  if (L.id) toast("Note saved.", "success"); // new leads: persists once "Create Lead" is clicked
+  renderLeadModalTab();
+}
+function removeStageTask(id) {
+  const L = window.__editingLead;
+  L.tasks = (L.tasks || []).filter(t => t.id !== id);
+  commitLeadEdit();
+  renderLeadModalTab();
+}
+
 function addGradeRow(kind) {
   syncFieldsFromDOM();
   gradeRows(window.__editingLead, kind).push({ subject: "", grade: "" });
@@ -924,6 +1260,7 @@ function syncFieldsFromDOM() {
   if (get("f_mobile")) L.mobile = get("f_mobile").value;
   if (get("f_email")) L.email = get("f_email").value;
   if (get("f_source")) L.leadSource = get("f_source").value;
+  if (get("f_modeOfContact")) L.modeOfContact = get("f_modeOfContact").value;
   if (get("f_digitalSub")) L.digitalSubSource = get("f_digitalSub").value;
   if (get("f_studentId")) L.studentId = get("f_studentId").value;
   if (get("f_staffName")) L.staffName = get("f_staffName").value;
@@ -931,6 +1268,11 @@ function syncFieldsFromDOM() {
   if (get("f_detailedStatus")) L.detailedStatus = get("f_detailedStatus").value;
   if (get("f_university")) L.university = get("f_university").value;
   if (get("f_program")) L.program = get("f_program").value;
+  if (get("f_country")) L.country = get("f_country").value;
+  if (get("f_previousSchool")) L.previousSchool = get("f_previousSchool").value;
+  if (get("f_priorQualificationType")) L.priorQualificationType = get("f_priorQualificationType").value;
+  if (get("f_bachelorsDegree")) L.bachelorsDegree = get("f_bachelorsDegree").value;
+  if (get("f_bachelorsUniversity")) L.bachelorsUniversity = get("f_bachelorsUniversity").value;
   if (get("f_district")) L.district = get("f_district").value;
   if (get("f_districtOther")) L.districtOther = get("f_districtOther").value;
   if (get("f_intake")) L.intakeId = get("f_intake").value;
@@ -971,6 +1313,7 @@ function exportLeadTimelinePDF() {
       <tr><th>Mobile</th><td>${esc(L.mobile)}</td><th>Email</th><td>${esc(L.email) || "—"}</td></tr>
       <tr><th>University</th><td>${esc(L.university) || "—"}</td><th>Program</th><td>${esc(L.program) || "—"}</td></tr>
       <tr><th>Source</th><td>${esc(L.leadSource)}</td><th>Assigned To</th><td>${esc(userName(L.assignedTo))}</td></tr>
+      <tr><th>Mode of Contact</th><td>${esc(L.modeOfContact) || "—"}</td><th></th><td></td></tr>
       <tr><th>Intake</th><td>${esc((DB.intakes.find(i => i.id === L.intakeId) || {}).name || "—")}</td><th>Created</th><td>${fmtDate(L.createdAt)}</td></tr>
     </tbody></table>`;
   const gradeSection = (label, rows) => (rows && rows.length)
@@ -1210,8 +1553,28 @@ function renderFollowups(root) {
 
   const escalations = leads.filter(l => escalationReason(l));
 
+  // Follow-Up Notes & Task Management — per-stage tasks with a due date/time, surfaced here as reminders
+  const openTasks = allOpenTasks(visibleLeads().filter(l => !l.deactivated)).filter(r => r.task.dueAt)
+    .sort((a, b) => new Date(a.task.dueAt) - new Date(b.task.dueAt));
+
   root.innerHTML = `
     <div class="page-header"><div><h1>Follow-Up Tracker</h1><div class="sub">Centralised list of pending tasks (UC31/UC65)</div></div></div>
+
+    <div class="card" style="border-left:3px solid var(--amber);">
+      <h3>🔔 Stage Notes &amp; Task Reminders <span class="pill">per-stage notes/tasks</span></h3>
+      ${openTasks.length ? `
+        <table><thead><tr><th>Lead</th><th>Stage</th><th>Note / Task</th><th>Due</th><th>Status</th><th></th></tr></thead>
+        <tbody>${openTasks.map(({ lead, task }) => `
+          <tr>
+            <td><b>${esc(lead.name)}</b></td>
+            <td>${stageBadge(task.stage)}</td>
+            <td>${esc(task.note)}</td>
+            <td>${fmtDateTime(task.dueAt)}</td>
+            <td>${taskStatusPill(task)}</td>
+            <td><button class="btn sm ghost" onclick="openLeadModal('${lead.id}')">Open</button></td>
+          </tr>`).join("")}</tbody></table>
+      ` : `<div class="empty-state">No pending stage tasks with a reminder date.</div>`}
+    </div>
 
     <div class="card" style="border-left:3px solid var(--red);">
       <h3>⚠ Escalations <span class="pill">UC32 / UC33 / UC34</span></h3>
@@ -1377,12 +1740,14 @@ function convertInquiry(id) {
   const inq = DB.inquiries.find(i => i.id === id);
   inq.convertedToLead = true;
   const lead = {
-    id: uid("lead"), name: inq.name, mobile: inq.mobile, email: inq.email, leadSource: "Walk-in", studentId: "", staffName: "",
-    university: "", program: inq.program, district: "Other", examType: "Local A/L", resultsPending: true,
+    id: uid("lead"), name: inq.name, mobile: inq.mobile, email: inq.email, leadSource: "Walk-in", modeOfContact: "", studentId: "", staffName: "",
+    university: "", program: inq.program, country: "Sri Lanka", district: "Other", previousSchool: "", priorQualificationType: "", bachelorsDegree: "", bachelorsUniversity: "",
+    examType: "Local A/L", resultsPending: true,
     olResult: "", alResult: "", languageTest: "None", languageScore: "", stage: "Open", deactivated: false,
     deactivationReason: "", lossReason: "", assignedTo: rand(DB.users.filter(u => u.role === "Counsellor").map(u => u.id)),
     intakeId: "", domain: rand(picklist('domains')), isReferral: false, referralType: "", agentId: "",
     checklist: makeChecklist(), commissionStatus: "Pending", tuitionFee: 850000, amountPaid: 0, outstandingBalance: 0, nextFollowUp: addDaysStr(todayStr(), 1), followUpLog: [], escalated: false,
+    applicationForm: defaultApplicationForm(), tasks: [],
     createdAt: new Date().toISOString(), activity: [{ ts: new Date().toISOString(), user: getCurrentUser().name, type: "Convert", text: "Converted from Inquiry" }]
   };
   DB.leads.push(lead);
@@ -1898,6 +2263,29 @@ function renderReportBody() {
   const leads = DB.leads;
   const tab = state.reportsTab;
 
+  if (tab === "journey") {
+    const journeyLeads = visibleLeads().filter(hasSubmittedApplication);
+    const stageCols = stages();
+    body.innerHTML = `
+      <div class="card">
+        <h3>Student Journey Report <span class="pill">sales head / counsellor</span></h3>
+        <p class="small-muted">Students who have submitted an application form, traced through each configured pipeline stage up to onboarding into the Student Management System. Dates are the first time each lead's own activity log recorded that stage.</p>
+        ${journeyLeads.length ? `
+        <div class="table-wrap"><table>
+          <thead><tr><th>Student</th><th>Source</th><th>Current Status</th>${stageCols.map(s => `<th>${esc(stageLabel(s))}</th>`).join("")}<th>Onboarded to SMS</th></tr></thead>
+          <tbody>${journeyLeads.map(l => {
+            const d = stageReachedDates(l);
+            return `<tr>
+              <td><a href="javascript:void(0)" onclick="openLeadModal('${l.id}')"><b>${esc(l.name)}</b></a></td>
+              <td>${esc(l.leadSource)}</td>
+              <td>${esc(l.detailedStatus) || stageBadge(l.stage)}</td>
+              ${stageCols.map(s => `<td>${d[s] ? fmtDate(d[s]) : "<span class='small-muted'>—</span>"}</td>`).join("")}
+              <td>${l.stage === "Converted" && d.Converted ? fmtDate(d.Converted) : "<span class='small-muted'>—</span>"}</td>
+            </tr>`;
+          }).join("")}</tbody>
+        </table></div>` : `<div class="empty-state">No leads in your view have submitted an application form yet.</div>`}
+      </div>`;
+  }
   if (tab === "status") {
     const counts = stages().map(s => ({ label: stageLabel(s), value: leads.filter(l => l.stage === s && !l.deactivated).length, color: stageColor(s) }));
     body.innerHTML = `<div class="card"><h3>Lead Status Distribution (UC45)</h3>${simpleBarChart(counts)}</div>`;
@@ -1994,6 +2382,16 @@ function currentReportData() {
   const tab = state.reportsTab;
   const def = REPORT_DEFS.find(r => r.id === tab) || { label: tab };
 
+  if (tab === "journey") {
+    const stageCols = stages();
+    const journeyLeads = visibleLeads().filter(hasSubmittedApplication);
+    const header = ["Student", "Source", "Current Status", ...stageCols.map(stageLabel), "Onboarded to SMS"];
+    return { title: def.label, rows: [header, ...journeyLeads.map(l => {
+      const d = stageReachedDates(l);
+      return [l.name, l.leadSource, l.detailedStatus || l.stage, ...stageCols.map(s => d[s] ? fmtDate(d[s]) : "—"),
+        l.stage === "Converted" && d.Converted ? fmtDate(d.Converted) : "—"];
+    })] };
+  }
   if (tab === "status") {
     return { title: def.label, rows: [["Stage", "Leads"], ...stages().map(s => [stageLabel(s), leads.filter(l => l.stage === s && !l.deactivated).length])] };
   }
@@ -2080,6 +2478,59 @@ function exportCurrentReportPDF() {
     ${rowsToTableHTML(rows)}`;
   if (printToPDF({ title, subtitle: "Reports & Analytics — Module M5", html })) {
     logAudit("EXPORT_PDF", "Report:" + state.reportsTab, `${title} exported as PDF`);
+    saveDB();
+    toast("Opening print dialog — choose “Save as PDF”.", "success");
+  }
+}
+
+/* ============================================================
+   LEAD SOURCE DASHBOARD — Head of Marketing: source targets vs actual counts
+   ============================================================ */
+function leadSourceDashboardRows() {
+  return picklist('leadSources').map(s => {
+    const actual = DB.leads.filter(l => l.leadSource === s && !l.deactivated).length;
+    const target = leadSourceTarget(s);
+    return { source: s, target, actual };
+  });
+}
+function renderLeadSourceDashboard(root) {
+  const rows = leadSourceDashboardRows();
+  root.innerHTML = `
+    <div class="page-header">
+      <div><h1>Lead Source Dashboard</h1><div class="sub">Target vs Actual lead counts by source — Head of Marketing</div></div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn secondary sm" onclick="exportLeadSourceDashboardCSV()">⬇ CSV</button>
+        <button class="btn sm" onclick="exportLeadSourceDashboardPDF()">📄 Export PDF</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Lead Source Performance</h3>
+      ${simpleBarChart(rows.flatMap(r => [
+        { label: r.source + " (Target)", value: r.target, color: "#94a3b8" },
+        { label: r.source + " (Actual)", value: r.actual, color: "#2563eb" }
+      ]))}
+      <table style="margin-top:14px"><thead><tr><th>Lead Source</th><th>Target</th><th>Actual</th><th>Variance</th><th>% of Target</th></tr></thead>
+      <tbody>${rows.map(r => `<tr><td>${esc(r.source)}</td><td>${r.target}</td><td>${r.actual}</td>
+        <td style="color:${r.actual - r.target >= 0 ? 'var(--green)' : 'var(--red)'}">${r.actual - r.target >= 0 ? "+" : ""}${r.actual - r.target}</td>
+        <td>${r.target ? Math.round(r.actual / r.target * 100) : 0}%</td></tr>`).join("")}</tbody></table>
+    </div>
+  `;
+}
+function exportLeadSourceDashboardCSV() {
+  const rows = [["Lead Source", "Target", "Actual", "Variance", "% of Target"], ...leadSourceDashboardRows().map(r =>
+    [r.source, r.target, r.actual, r.actual - r.target, (r.target ? Math.round(r.actual / r.target * 100) : 0) + "%"])];
+  downloadCSV("lead_source_dashboard.csv", rows);
+  logAudit("EXPORT", "LeadSourceDashboard", `Exported as CSV (${rows.length - 1} rows)`);
+  saveDB();
+  toast("Dashboard exported as CSV.", "success");
+}
+function exportLeadSourceDashboardPDF() {
+  const rows = [["Lead Source", "Target", "Actual", "Variance", "% of Target"], ...leadSourceDashboardRows().map(r =>
+    [r.source, r.target, r.actual, r.actual - r.target, (r.target ? Math.round(r.actual / r.target * 100) : 0) + "%"])];
+  const visual = document.getElementById("content");
+  const html = `${visual ? visual.querySelector(".card").innerHTML : ""}<h3>Data</h3>${rowsToTableHTML(rows)}`;
+  if (printToPDF({ title: "Lead Source Dashboard", subtitle: "Target vs Actual by lead source", html })) {
+    logAudit("EXPORT_PDF", "LeadSourceDashboard", "Exported as PDF");
     saveDB();
     toast("Opening print dialog — choose “Save as PDF”.", "success");
   }
@@ -2177,12 +2628,14 @@ function saveAgentLead(agentId) {
   const mobile = document.getElementById("ag_mobile").value.trim();
   if (!name || !mobile) { toast("Name and mobile required.", "error"); return; }
   DB.leads.push({
-    id: uid("lead"), name, mobile, email: document.getElementById("ag_email").value.trim(), leadSource: "Agent Referral",
-    studentId: "", staffName: "", university: "", program: document.getElementById("ag_program").value, district: "Other",
+    id: uid("lead"), name, mobile, email: document.getElementById("ag_email").value.trim(), leadSource: "Agent Referral", modeOfContact: "",
+    studentId: "", staffName: "", university: "", program: document.getElementById("ag_program").value, country: "Sri Lanka", district: "Other",
+    previousSchool: "", priorQualificationType: "", bachelorsDegree: "", bachelorsUniversity: "",
     examType: "Local A/L", resultsPending: true, olResult: "", alResult: "", languageTest: "None", languageScore: "",
     stage: "Open", deactivated: false, deactivationReason: "", lossReason: "", assignedTo: rand(DB.users.filter(u => u.role === "Counsellor").map(u => u.id)),
     intakeId: "", domain: rand(picklist('domains')), isReferral: true, referralType: "Student", agentId,
     checklist: makeChecklist(), commissionStatus: "Pending", tuitionFee: 850000, amountPaid: 0, outstandingBalance: 0, nextFollowUp: addDaysStr(todayStr(), 1), followUpLog: [], escalated: false,
+    applicationForm: defaultApplicationForm(), tasks: [],
     createdAt: new Date().toISOString(), activity: [{ ts: new Date().toISOString(), user: "Agent Portal", type: "Create", text: "Lead submitted via Agent Portal" }]
   });
   logAudit("CREATE", "Lead (Agent)", `Agent ${agentId} submitted ${name}`);
@@ -2380,6 +2833,14 @@ function adminPipelineHTML(lock, lockNote, isAdmin) {
     </div>
 
     <div class="card">
+      <h3>Pipeline Stage Targets <span class="pill">Pipeline Target vs Actual Dashboard</span></h3>
+      <p class="small-muted">Target lead counts per stage, compared against actuals on the Head of Marketing dashboard.</p>
+      <div class="table-wrap"><table><thead><tr><th>Stage</th><th style="width:140px">Target</th></tr></thead>
+      <tbody>${stages().map(s => `<tr><td>${stageBadge(s)}</td><td><input type="number" min="0" class="stageTargetInput" data-stage="${s}" value="${stageTarget(s)}" ${lock}></td></tr>`).join("")}</tbody></table></div>
+      ${isAdmin ? `<button class="btn sm" style="margin-top:10px" onclick="savePipelineStageTargets()">Save Targets</button>` : lockNote}
+    </div>
+
+    <div class="card">
       <h3>Mandatory Fields per Stage <span class="pill">UC59</span></h3>
       <p class="small-muted">Tick the fields a lead must have filled <b>before it may enter</b> each stage. Enforced in the lead form and on Kanban drag-and-drop. Academic result fields are auto-relaxed when "Results Pending" is set (UC56).</p>
       <div class="table-wrap"><table><thead><tr><th>Field</th>${stages().map(s => `<th style="text-align:center">${esc(stageLabel(s))}</th>`).join("")}</tr></thead>
@@ -2406,8 +2867,10 @@ function adminFieldsHTML(lock, lockNote, isAdmin) {
     ["universities", "Universities", "UC28 / UC48"],
     ["programs", "Programs", "UC63 / UC78"],
     ["districts", "Districts", "UC58"],
+    ["countries", "Countries", ""],
     ["domains", "Tenants / Domains", "UC30"],
     ["leadSources", "Lead Sources", "UC21 / UC22 / UC47"],
+    ["modesOfContact", "Mode of Contact", ""],
     ["digitalSubSources", "Digital Sub-Sources", "UC25"],
     ["lossReasons", "Loss Reasons", "UC77"],
     ["olSubjects", "O/L Subjects", "UC55"],
@@ -2425,6 +2888,24 @@ function adminFieldsHTML(lock, lockNote, isAdmin) {
           </div>`).join("")}
       </div>
       ${isAdmin ? `<button class="btn sm" onclick="savePicklists()">Save Picklists</button> <button class="btn sm secondary" onclick="resetPicklists()">Reset to Defaults</button>` : lockNote}
+    </div>
+
+    <div class="card">
+      <h3>Program Types <span class="pill">Program-Based Field Configuration</span></h3>
+      <p class="small-muted">Which academic fields the lead form shows depends on a program's type: Foundation → previous school + O/L or A/L; Master's → Bachelor's degree + university; Bachelor's/Other → the standard O/L/A/L capture.</p>
+      <div class="table-wrap"><table><thead><tr><th>Program</th><th style="width:180px">Type</th></tr></thead>
+      <tbody>${picklist('programs').map(p => `<tr><td>${esc(p)}</td><td>
+        <select class="programTypeSel" data-program="${esc(p)}" ${lock}>${PROGRAM_TYPES.map(t => `<option ${programType(p) === t ? "selected" : ""}>${t}</option>`).join("")}</select>
+      </td></tr>`).join("")}</tbody></table></div>
+      ${isAdmin ? `<button class="btn sm" style="margin-top:10px" onclick="saveProgramTypes()">Save Program Types</button>` : lockNote}
+    </div>
+
+    <div class="card">
+      <h3>Lead Source Targets <span class="pill">Lead Source Dashboard</span></h3>
+      <p class="small-muted">Target lead counts per source, compared against actuals on the Head of Marketing's Lead Source Dashboard.</p>
+      <div class="table-wrap"><table><thead><tr><th>Lead Source</th><th style="width:140px">Target</th></tr></thead>
+      <tbody>${picklist('leadSources').map(s => `<tr><td>${esc(s)}</td><td><input type="number" min="0" class="sourceTargetInput" data-source="${esc(s)}" value="${leadSourceTarget(s)}" ${lock}></td></tr>`).join("")}</tbody></table></div>
+      ${isAdmin ? `<button class="btn sm" style="margin-top:10px" onclick="saveLeadSourceTargets()">Save Targets</button>` : lockNote}
     </div>
 
     <div class="card">
@@ -2635,7 +3116,8 @@ function savePicklists() {
 function resetPicklists() {
   DB.picklists = {
     universities: UNIVERSITIES.slice(), programs: PROGRAMS.slice(), districts: DISTRICTS.slice(),
-    domains: DOMAINS.slice(), leadSources: LEAD_SOURCES.slice(),
+    countries: COUNTRIES.slice(), domains: DOMAINS.slice(), leadSources: LEAD_SOURCES.slice(),
+    modesOfContact: MODES_OF_CONTACT.slice(),
     digitalSubSources: DIGITAL_SUBSOURCES.slice(), lossReasons: LOSS_REASONS.slice(),
     olSubjects: OL_SUBJECTS.slice(), alSubjects: AL_SUBJECTS.slice()
   };
@@ -2793,6 +3275,34 @@ function resetTransitionRules() {
   saveDB();
   toast("Transition rules reset to defaults.", "success");
   renderAdmin(document.getElementById("content"));
+}
+function savePipelineStageTargets() {
+  const targets = Object.assign({}, DB.pipelineStageTargets);
+  document.querySelectorAll(".stageTargetInput").forEach(inp => {
+    targets[inp.dataset.stage] = Math.max(0, Number(inp.value || 0));
+  });
+  DB.pipelineStageTargets = targets;
+  logAudit("UPDATE", "PipelineStageTargets", JSON.stringify(targets));
+  saveDB();
+  toast("Pipeline stage targets saved.", "success");
+}
+function saveProgramTypes() {
+  const types = Object.assign({}, DB.programTypes);
+  document.querySelectorAll(".programTypeSel").forEach(sel => { types[sel.dataset.program] = sel.value; });
+  DB.programTypes = types;
+  logAudit("UPDATE", "ProgramTypes", JSON.stringify(types));
+  saveDB();
+  toast("Program types saved.", "success");
+}
+function saveLeadSourceTargets() {
+  const targets = Object.assign({}, DB.leadSourceTargets);
+  document.querySelectorAll(".sourceTargetInput").forEach(inp => {
+    targets[inp.dataset.source] = Math.max(0, Number(inp.value || 0));
+  });
+  DB.leadSourceTargets = targets;
+  logAudit("UPDATE", "LeadSourceTargets", JSON.stringify(targets));
+  saveDB();
+  toast("Lead source targets saved.", "success");
 }
 function saveDeactivationCriteria() {
   DB.deactivationMinDays = Math.max(0, Number(document.getElementById("deactMinDays").value || 0));
