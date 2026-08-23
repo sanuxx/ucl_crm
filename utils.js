@@ -24,13 +24,82 @@ function esc(s) {
   return String(s).replace(/[&<>"']/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
 }
 
+/* ============================================================
+   Icons
+   Emoji rendered as UI chrome were the strongest "not enterprise software"
+   signal in the app, and they rasterise differently on Windows vs macOS — so a
+   demo looked different on every machine. These are 16px stroke glyphs matching
+   the sidebar nav's existing style (currentColor, 1.6 stroke, round caps), so an
+   icon always inherits the colour of the control it sits in.
+   Usage: icon("download") — returns an inline <svg> string.
+   ============================================================ */
+const ICON_PATHS = {
+  plus:        '<path d="M8 3.5v9M3.5 8h9"/>',
+  download:    '<path d="M8 2.5v8M4.5 7.5 8 11l3.5-3.5M3 13h10"/>',
+  upload:      '<path d="M8 13.5v-8M4.5 8.5 8 5l3.5 3.5M3 3h10"/>',
+  document:    '<path d="M4 2h5l3 3v9H4z"/><path d="M9 2v3h3"/>',
+  mail:        '<rect x="2.5" y="3.5" width="11" height="9" rx="1.5"/><path d="m3 5 5 3.5L13 5"/>',
+  check:       '<path d="m3.5 8.5 3 3 6-7"/>',
+  checkCircle: '<circle cx="8" cy="8" r="6"/><path d="m5.5 8 1.8 1.8L10.5 6"/>',
+  x:           '<path d="m4 4 8 8M12 4l-8 8"/>',
+  lock:        '<rect x="3.5" y="7" width="9" height="6.5" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/>',
+  bell:        '<path d="M12 6a4 4 0 0 0-8 0c0 4.5-1.5 5.5-1.5 5.5h11S12 10.5 12 6"/><path d="M9.2 13.5a1.4 1.4 0 0 1-2.4 0"/>',
+  card:        '<rect x="2" y="4" width="12" height="8" rx="1.5"/><path d="M2 7h12"/>',
+  cap:         '<path d="M8 3 1.5 6 8 9l6.5-3z"/><path d="M4 7.5v3c0 1 1.8 1.8 4 1.8s4-.8 4-1.8v-3"/>',
+  note:        '<path d="M3 3h10v7l-3 3H3z"/><path d="M13 10h-3v3"/>',
+  target:      '<circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="2.5"/>',
+  globe:       '<circle cx="8" cy="8" r="5.5"/><path d="M2.5 8h11M8 2.5a9 9 0 0 1 0 11 9 9 0 0 1 0-11"/>',
+  refresh:     '<path d="M13 8a5 5 0 1 1-1.6-3.6"/><path d="M13.5 2.5V6H10"/>',
+  send:        '<path d="m13.5 2.5-11 4 4.2 1.8L8.5 12z"/>',
+  users:       '<circle cx="6.5" cy="6" r="2.3"/><path d="M2.5 13c0-2.2 1.8-3.6 4-3.6s4 1.4 4 3.6"/><path d="M11 4.2a2.3 2.3 0 0 1 0 4.2M12 13c0-1.6-.6-2.6-1.6-3.2"/>',
+  clock:       '<circle cx="8" cy="8" r="5.5"/><path d="M8 5v3l2 1.3"/>',
+  warn:        '<path d="M8 2.8 14 13H2z"/><path d="M8 6.6v2.6M8 11h.01"/>',
+  info:        '<circle cx="8" cy="8" r="5.5"/><path d="M8 7.3v3.4M8 5.3h.01"/>',
+  save:        '<path d="M3 3h7l3 3v7H3z"/><path d="M5.5 3v3.5h5V3M5.5 13v-3.5h5V13"/>',
+  phone:       '<rect x="4.5" y="2" width="7" height="12" rx="1.5"/><path d="M7 12h2"/>',
+  search:      '<circle cx="7.2" cy="7.2" r="4.2"/><path d="m10.4 10.4 2.6 2.6"/>',
+  user:        '<circle cx="8" cy="5.5" r="2.6"/><path d="M3 13.5c0-2.5 2.2-4.2 5-4.2s5 1.7 5 4.2"/>',
+  calendar:    '<rect x="2.5" y="3.5" width="11" height="10" rx="1.5"/><path d="M2.5 6.5h11M5.5 2v3M10.5 2v3"/>'
+};
+function icon(name, cls) {
+  const d = ICON_PATHS[name];
+  if (!d) return "";
+  return `<svg class="ic${cls ? " " + cls : ""}" viewBox="0 0 16 16" aria-hidden="true" focusable="false">${d}</svg>`;
+}
+
+const TOAST_MAX = 3;        // deep stacks blanket the corner and hide each other
+const TOAST_LIFE_MS = 2600;
+
+function dismissToast(el) {
+  if (!el || el.classList.contains("leaving")) return;
+  clearTimeout(el.__timer);
+  el.classList.add("leaving");
+  setTimeout(() => el.remove(), 200); // matches the .toast transition
+}
+
 function toast(msg, type) {
   const c = document.getElementById("toastContainer");
+  if (!c) return;
+
+  // Repeating the same message (e.g. hammering a blocked action) should reset the
+  // existing toast rather than stack duplicates.
+  const last = c.lastElementChild;
+  if (last && !last.classList.contains("leaving") && last.dataset.msg === msg) {
+    clearTimeout(last.__timer);
+    last.__timer = setTimeout(() => dismissToast(last), TOAST_LIFE_MS);
+    return;
+  }
+
+  while (c.children.length >= TOAST_MAX) c.firstElementChild.remove();
+
   const el = document.createElement("div");
   el.className = "toast" + (type ? " " + type : "");
   el.textContent = msg;
+  el.dataset.msg = msg;
+  el.title = "Click to dismiss";
+  el.onclick = () => dismissToast(el);
   c.appendChild(el);
-  setTimeout(() => el.remove(), 3200);
+  el.__timer = setTimeout(() => dismissToast(el), TOAST_LIFE_MS);
 }
 
 function openModal(html, opts) {
@@ -42,14 +111,55 @@ function openModal(html, opts) {
   });
   // Esc closes; focus the first field so you can type straight away
   document.addEventListener("keydown", modalEscHandler);
+  // Toasts live bottom-right — exactly where .modal-footer puts Save/Cancel. This
+  // flag moves the toast stack to the top for as long as a modal is open, so it
+  // can never sit over the buttons the user is trying to click.
+  document.body.classList.add("modal-open");
   const firstInput = root.querySelector("input:not([type=checkbox]):not([type=file]), select, textarea");
   if (firstInput && !opts.noAutofocus) setTimeout(() => firstInput.focus(), 40);
 }
 function modalEscHandler(e) {
   if (e.key === "Escape") closeModal();
 }
+
+/* In-app replacement for native confirm()/prompt(), which render unstyled OS chrome
+   mid-demo. Optionally collects a required reason, replacing prompt() outright.
+
+   IMPORTANT: this writes into #modalRoot like every other modal, so it REPLACES any
+   modal already on screen. Only call it when nothing else is open — when a modal is
+   already up, render an inline .notice into that modal's body instead (see the
+   duplicate-lead flow in saveLeadModal). */
+function confirmModal(opts) {
+  opts = opts || {};
+  const needsReason = !!opts.requireReason;
+  window.__confirmModalCb = opts.onConfirm;
+  openModal(`
+    <div class="modal-header"><h2>${esc(opts.title || "Please confirm")}</h2>
+      <button class="close-x" onclick="closeModal()">&times;</button></div>
+    <div class="modal-body">
+      <p>${esc(opts.message || "")}</p>
+      ${needsReason ? `<div class="field"><label class="required">${esc(opts.reasonLabel || "Reason")}</label>
+        <input id="confirmModalReason" placeholder="${esc(opts.placeholder || "")}" oninput="document.getElementById('confirmModalGo').disabled = !this.value.trim()"></div>` : ""}
+    </div>
+    <div class="modal-footer">
+      <button class="btn secondary" onclick="closeModal()">${esc(opts.cancelLabel || "Cancel")}</button>
+      <button class="btn ${opts.danger ? "danger" : ""}" id="confirmModalGo" ${needsReason ? "disabled" : ""}
+        onclick="submitConfirmModal()">${esc(opts.confirmLabel || "Confirm")}</button>
+    </div>
+  `, { width: 520 });
+}
+function submitConfirmModal() {
+  const input = document.getElementById("confirmModalReason");
+  const reason = input ? input.value.trim() : "";
+  if (input && !reason) return; // button is disabled anyway; belt and braces
+  const cb = window.__confirmModalCb;
+  window.__confirmModalCb = null;
+  closeModal();
+  if (cb) cb(reason);
+}
 function closeModal() {
   document.removeEventListener("keydown", modalEscHandler);
+  document.body.classList.remove("modal-open");
   document.getElementById("modalRoot").innerHTML = "";
 }
 
@@ -85,6 +195,10 @@ function visibleLeads() {
     }
     case "Agent":
       return scoped.filter(l => l.agentId === user.id);
+    // Academic Admin — access only to applications relevant to verification (Student Application
+    // Forms and Offer Letters), i.e. leads whose application form has actually been sent onward.
+    case "Academic Admin":
+      return scoped.filter(l => (l.applicationForm || {}).status !== "Not Sent");
     case "Head of Marketing":
     case "CEO":
     case "Admin":
@@ -172,6 +286,48 @@ const PICKLIST_FALLBACK = {
 /* ---------------- Program-Based Field Configuration ---------------- */
 function programType(program) {
   return (DB.programTypes && DB.programTypes[program]) || "Other";
+}
+
+/* ---------------- Application Form — Educational Qualification cascade ---------------- */
+function programsForUniversity(university) {
+  const list = DB.programsByUniversity && DB.programsByUniversity[university];
+  return (Array.isArray(list) && list.length) ? list : picklist('programs');
+}
+
+/* ---------------- Application Form — Intake Display (Current & Next Intake only) ---------------- */
+function currentAndNextIntakes() {
+  const today = todayStr();
+  const sorted = (DB.intakes || []).slice().sort((a, b) => (a.start || "").localeCompare(b.start || ""));
+  if (!sorted.length) return [];
+  let current = sorted.find(i => i.start <= today && today <= i.end);
+  if (!current) current = sorted.find(i => i.end >= today) || sorted[sorted.length - 1];
+  const idx = sorted.indexOf(current);
+  const next = sorted[idx + 1] || null;
+  return [current, next].filter(Boolean);
+}
+
+/* ---------------- Website Leads ---------------- */
+function unassignedWebsiteLeads(leads) {
+  return leads.filter(l => l.websiteLead && !l.assignedTo);
+}
+
+/* ---------------- Offer Release & Student Registration Process ---------------- */
+function academicAdminUsers() { return DB.users.filter(u => u.role === "Academic Admin"); }
+function headOfMarketingUsers() { return DB.users.filter(u => u.role === "Head of Marketing"); }
+function notifyRole(role, leadId, reason, level) {
+  DB.users.filter(u => u.role === role).forEach(u => notify(u.id, leadId, reason, level));
+}
+// Leads awaiting Academic Admin confirmation — Reviewed by the counsellor but not yet confirmed.
+function pendingConfirmationLeads(leads) {
+  return leads.filter(l => l.applicationForm && l.applicationForm.status === "Reviewed" && l.applicationForm.academicConfirmation.status !== "Confirmed");
+}
+// Leads pushed to Admin Staff for registration but not yet transferred to the SMS.
+function pendingRegistrationLeads(leads) {
+  return leads.filter(l => l.applicationForm && l.applicationForm.pushedToAdmin.status === "Pushed" && l.applicationForm.smsTransfer.status !== "Transferred");
+}
+// Pending Offer Dashboard (Counsellor) — offer released by Academic Admin but not yet sent to the student.
+function pendingOfferLeads(leads) {
+  return leads.filter(l => l.applicationForm && l.applicationForm.offerRelease.status === "Released" && l.applicationForm.offerLetter.status !== "Issued");
 }
 function picklist(key) {
   const v = DB && DB.picklists && DB.picklists[key];
@@ -373,6 +529,13 @@ function hasSubmittedApplication(lead) {
 // Derives, from the lead's own activity log, the first date it reached each pipeline stage —
 // a genuine journey trace rather than a guess, matching the "Stage Change" entries written by
 // attemptStageChange()/handleKanbanDrop().
+// The real SMS transfer date if the registration hand-off has completed, else the Converted-stage
+// date as a fallback proxy for leads that predate the Offer Release & Registration Process.
+function smsOnboardDate(lead, stageDates) {
+  const sms = ((lead.applicationForm || {}).smsTransfer || {});
+  if (sms.status === "Transferred") return sms.transferredAt;
+  return lead.stage === "Converted" ? stageDates.Converted : null;
+}
 function stageReachedDates(lead) {
   const dates = { Open: lead.createdAt };
   const acts = (lead.activity || []).slice().reverse(); // oldest first
@@ -413,6 +576,29 @@ function isMandatoryMet(lead, stage) {
   return { ok: missing.length === 0, missing };
 }
 
+/* Chart palette. Kept as literals (not read from :root via getComputedStyle) because
+   utils.js is a plain script with no init hook — a literal has no load-order hazard.
+   Values mirror the CSS tokens so charts and UI can't drift apart the way the previous
+   scattered hex literals did (#e0821e vs --amber, #1c8a4c vs --green, ...). */
+const CHART = {
+  primary: "#2563eb",   // --blue-600
+  muted:   "#94a3b8",   // target/comparison bars
+  grid:    "#e2e6ec",
+  ink:     "#16233a",   // --text
+  good:    "#0f8a4c",   // --green
+  warn:    "#b3730a",   // --amber
+  bad:     "#c62b2b",   // --red
+  series:  ["#2563eb", "#b3730a", "#0f8a4c", "#c62b2b", "#6d28d9", "#0ea5e9"]
+};
+
+/* Three (or two) big numbers in a row — the dashboard's most-repeated inline-styled
+   block, previously hand-written with font-size:24px at each site. */
+function statTriple(items) {
+  return `<div class="stat-triple">${items.map(i => `
+    <div><div class="st-value" style="color:${i.color}">${i.value}</div><div class="small-muted">${esc(i.label)}</div></div>
+  `).join("")}</div>`;
+}
+
 function simpleBarChart(rows, opts) {
   // rows: [{label, value, color}]
   opts = opts || {};
@@ -420,7 +606,7 @@ function simpleBarChart(rows, opts) {
   return `<div>${rows.map(r => `
     <div class="bar-row">
       <div class="label">${esc(r.label)}</div>
-      <div class="bar-track"><div class="bar-fill" style="width:${(r.value / max * 100).toFixed(1)}%;background:${r.color || '#2563eb'}"></div></div>
+      <div class="bar-track"><div class="bar-fill" style="width:${(r.value / max * 100).toFixed(1)}%;background:${r.color || CHART.primary}"></div></div>
       <div class="val">${r.value}</div>
     </div>`).join("")}</div>`;
 }
@@ -442,7 +628,7 @@ function donutSVG(segments, size) {
   });
   return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">${circles}
     <circle cx="${c}" cy="${c}" r="${r - 20}" fill="#fff"></circle>
-    <text x="${c}" y="${c}" text-anchor="middle" dominant-baseline="middle" font-size="16" font-weight="700" fill="#1e2733">${total}</text>
+    <text x="${c}" y="${c}" text-anchor="middle" dominant-baseline="middle" font-size="16" font-weight="700" fill="${CHART.ink}">${total}</text>
   </svg>`;
 }
 

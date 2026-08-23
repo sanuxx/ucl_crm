@@ -4,13 +4,31 @@
 
 loadDB();
 
-let state = {
-  leadTab: "Open",
-  leadFilter: { search: "", university: "", program: "", source: "", digitalSub: "", domain: "", nonCollectible: false },
-  pipelineFilter: { program: "" },
-  reportsTab: "status",
-  commissionTab: "plans"
-};
+function defaultState() {
+  return {
+    leadTab: "Open",
+    leadFilter: { search: "", university: "", program: "", source: "", digitalSub: "", domain: "", nonCollectible: false },
+    pipelineFilter: { program: "" },
+    reportsTab: "status",
+    commissionTab: "plans"
+  };
+}
+
+// Keys created lazily by individual views (always read as `state.x = state.x || default`),
+// so deleting them on a role switch is safe and restores each view's own default.
+const TRANSIENT_STATE_KEYS = ["fuFilter", "avTab", "adminTab", "reportsIntake",
+  "targetIntake", "permRole", "auditFilter", "dashProgTab", "selectedLeadIds"];
+
+// Wipes per-view filters/tabs when the acting user changes. Without this, a filter set
+// as one role silently carries over and makes the next role look like it has no data.
+// Mutates in place — renderLeads() captures `state.leadFilter` into its input handlers,
+// so reassigning `state` would leave those writing to a detached object.
+function resetViewState() {
+  Object.assign(state, defaultState());
+  TRANSIENT_STATE_KEYS.forEach(k => delete state[k]);
+}
+
+let state = defaultState();
 
 /* ---------------- Top bar setup ---------------- */
 function renderTopBar() {
@@ -43,8 +61,20 @@ function renderTopBar() {
   }
   refreshAvatar();
 
-  roleSelect.onchange = () => { refreshUserSelect(); refreshAvatar(); saveDB(); renderSidebar(); renderNotificationBell(); router(); };
-  userSelect.onchange = () => { DB.currentUserId = userSelect.value; refreshAvatar(); saveDB(); renderSidebar(); renderNotificationBell(); router(); };
+  // Switching the acting user re-scopes every list. Close any open modal (it holds a
+  // lead the incoming role may not be allowed to see), clear per-view filters/tabs so
+  // the new role doesn't inherit a filter that hides all their data, and bounce off the
+  // current view if it isn't permitted — otherwise the router would paint a dead end.
+  function switchActingUser(before) {
+    closeModal();
+    before();
+    resetViewState();
+    refreshAvatar(); saveDB(); renderSidebar(); renderNotificationBell();
+    if (!canAccessView(currentView(), currentRole())) go("#/dashboard");
+    else router();
+  }
+  roleSelect.onchange = () => switchActingUser(refreshUserSelect);
+  userSelect.onchange = () => switchActingUser(() => { DB.currentUserId = userSelect.value; });
 
   document.getElementById("hamburger").onclick = () => {
     document.getElementById("sidebar").classList.toggle("collapsed");
@@ -100,19 +130,44 @@ const NAV_PERMS = {
   "audit": ["Admin", "Head of Marketing", "CEO"],
   "admin": ["Admin"],
   "agent-portal": ["Agent", "Manager", "Admin"],
-  "intakes": ["Admin", "Manager", "Head of Marketing", "CEO", "Counsellor"]
+  "intakes": ["Admin", "Manager", "Head of Marketing", "CEO", "Counsellor"],
+  "app-verification": ["Academic Admin", "Admin"],
+  "website-leads": ["Head of Marketing", "CEO", "Admin"]
 };
+// Academic Admin — "access only to the Student Application Forms and Offer Letters relevant to
+// the verification process" (not the full CRM), so their nav is a hard allow-list rather than
+// the exclude-list NAV_PERMS uses for everyone else.
+const ACADEMIC_ADMIN_VIEWS = ["dashboard", "app-verification"];
 
 function renderSidebar() {
   const role = currentRole();
   document.querySelectorAll(".nav-item").forEach(item => {
     const view = item.dataset.view;
+    if (role === "Academic Admin") { item.style.display = ACADEMIC_ADMIN_VIEWS.includes(view) ? "" : "none"; return; }
     const perm = NAV_PERMS[view];
     item.style.display = (!perm || perm.includes(role)) ? "" : "none";
   });
 }
 
 /* ---------------- Router ---------------- */
+// Single source of truth for view access, shared by router() and the role switcher
+// so a role change can redirect *before* rendering rather than painting a denial.
+function canAccessView(view, role) {
+  if (role === "Academic Admin") return ACADEMIC_ADMIN_VIEWS.includes(view);
+  const perm = NAV_PERMS[view];
+  return !perm || perm.includes(role);
+}
+function currentView() {
+  return (location.hash.replace("#/", "") || "dashboard").split("?")[0];
+}
+// Navigates without double-rendering: assigning a new hash fires `hashchange`
+// (which calls router()), but re-assigning the *same* hash fires nothing — so only
+// then do we invoke router() directly.
+function go(hash) {
+  if (location.hash === hash) router();
+  else location.hash = hash;
+}
+
 function router() {
   const hash = location.hash.replace("#/", "") || "dashboard";
   const view = hash.split("?")[0];
@@ -131,11 +186,15 @@ function router() {
     intakes: renderIntakes,
     "agent-portal": renderAgentPortal,
     audit: renderAudit,
-    admin: renderAdmin
+    admin: renderAdmin,
+    "app-verification": renderAppVerification,
+    "website-leads": renderWebsiteLeads,
+    apply: renderApplyOnline
   };
-  const perm = NAV_PERMS[view];
-  if (perm && !perm.includes(currentRole())) {
-    content.innerHTML = `<div class="empty-state">🚫 Your role (${currentRole()}) does not have access to this section.</div>`;
+  if (!canAccessView(view, currentRole())) {
+    content.innerHTML = currentRole() === "Academic Admin"
+      ? `<div class="empty-state">Academic Admin has access only to the Dashboard and Application Verification queue.</div>`
+      : `<div class="empty-state">Your role (${esc(currentRole())}) does not have access to this section.</div>`;
     return;
   }
   (renderers[view] || renderDashboard)(content);
@@ -146,6 +205,7 @@ window.addEventListener("hashchange", router);
    DASHBOARD
    ============================================================ */
 function renderDashboard(root) {
+  if (currentRole() === "Academic Admin") { renderAcademicAdminDashboard(root); return; }
   const leads = visibleLeads();
   const stageCounts = {};
   stages().forEach(s => stageCounts[s] = leads.filter(l => l.stage === s && !l.deactivated).length);
@@ -183,6 +243,10 @@ function renderDashboard(root) {
     </div>`;
 
   const firstName = (getCurrentUser().name || "").split(/\s+/)[0];
+  // Section anchors are only offered for sections this role actually gets.
+  const showsRoleStatus = ROLE_STATUS_DASHBOARD_ROLES.includes(currentRole());
+  const isCounsellorView = currentRole() === "Counsellor";
+  const showsPipelineTargets = ["Head of Marketing", "CEO", "Admin"].includes(currentRole());
 
   root.innerHTML = `
     <div class="hero">
@@ -192,17 +256,22 @@ function renderDashboard(root) {
         <div class="progress-pills">${pills}</div>
       </div>
       <div class="hero-stats">
-        <div class="hstat"><div class="hs-value">${leads.filter(l => !l.deactivated).length}</div><div class="hs-label"><i>👥</i>Active Leads</div></div>
-        <div class="hstat"><div class="hs-value">${stageCounts.Converted}</div><div class="hs-label"><i>🎓</i>Enrolments</div></div>
-        <div class="hstat"><div class="hs-value">${overdue}</div><div class="hs-label"><i>⏰</i>Overdue</div></div>
+        <div class="hstat"><div class="hs-value">${leads.filter(l => !l.deactivated).length}</div><div class="hs-label"><i>${icon("users")}</i>Active Leads</div></div>
+        <div class="hstat"><div class="hs-value">${stageCounts.Converted}</div><div class="hs-label"><i>${icon("cap")}</i>Enrolments</div></div>
+        <div class="hstat"><div class="hs-value">${overdue}</div><div class="hs-label"><i>${icon("clock")}</i>Overdue</div></div>
       </div>
     </div>
 
-    <div class="page-header" style="margin-bottom:18px">
-      <div></div>
-      <button class="btn secondary sm" onclick="if(confirm('Reset all demo data?')){resetDB();router();}">↺ Reset Demo Data</button>
+    <div class="dash-nav">
+      <div class="chip-row" style="margin-bottom:0">
+        <div class="chip" onclick="jumpToSection('sec-overview')">Overview</div>
+        ${showsRoleStatus ? `<div class="chip" onclick="jumpToSection('sec-role')">${isCounsellorView ? "My Pipeline" : "Team Pipeline"}</div>` : ""}
+        ${showsPipelineTargets ? `<div class="chip" onclick="jumpToSection('sec-targets')">Pipeline Targets</div>` : ""}
+      </div>
+      <button class="btn secondary sm" onclick="confirmResetDemoData()">${icon("refresh")} Reset Demo Data</button>
     </div>
 
+    <div id="sec-overview"></div>
     ${statRow ? `<div class="widget-grid">${statRow}</div>` : ""}
 
     <div class="two-col">
@@ -212,11 +281,11 @@ function renderDashboard(root) {
       </div>` : ""}
       ${canViewWidget("followups") ? `<div class="card">
         <h3>Follow-Up Status <span class="pill">UC86</span></h3>
-        <div style="display:flex;gap:10px;text-align:center;">
-          <div style="flex:1"><div style="font-size:24px;font-weight:700;color:var(--red)">${overdue}</div><div class="small-muted">Overdue</div></div>
-          <div style="flex:1"><div style="font-size:24px;font-weight:700;color:var(--amber)">${today}</div><div class="small-muted">Due Today</div></div>
-          <div style="flex:1"><div style="font-size:24px;font-weight:700;color:var(--green)">${upcoming}</div><div class="small-muted">Upcoming</div></div>
-        </div>
+        ${statTriple([
+          { label: "Overdue", value: overdue, color: "var(--red)" },
+          { label: "Due Today", value: today, color: "var(--amber)" },
+          { label: "Upcoming", value: upcoming, color: "var(--green)" }
+        ])}
         <hr class="sep">
         <a href="#/followups" class="btn secondary sm">Open Follow-Up Tracker →</a>
       </div>` : ""}
@@ -231,7 +300,7 @@ function renderDashboard(root) {
       </ul>
     </div>` : ""}
     ${!statRow && !canViewWidget("pipeline") && !canViewWidget("followups") && !canViewWidget("activity")
-      ? `<div class="empty-state">No dashboard widgets are enabled for the ${esc(currentRole())} role (UC49).</div>` : ""}
+      ? `<div class="empty-state">No dashboard widgets are enabled for the ${esc(currentRole())} role.</div>` : ""}
 
     ${renderRoleStatusDashboard(leads)}
     ${renderPipelineTargetDashboard(leads)}
@@ -247,37 +316,151 @@ function renderPipelineTargetDashboard(leads) {
     actual: leads.filter(l => l.stage === s && !l.deactivated).length
   }));
   return `
-    <h2 style="margin:26px 0 4px">Pipeline Target vs Actual<span class="pill">Head of Marketing</span></h2>
+    <h2 id="sec-targets" style="margin:26px 0 4px">Pipeline Target vs Actual<span class="pill">Head of Marketing</span></h2>
     <div class="card">
       <h3>Performance Across Pipeline Stages</h3>
       ${simpleBarChart(rows.flatMap(r => [
-        { label: stageLabel(r.stage) + " (Target)", value: r.target, color: "#94a3b8" },
+        { label: stageLabel(r.stage) + " (Target)", value: r.target, color: CHART.muted },
         { label: stageLabel(r.stage) + " (Actual)", value: r.actual, color: stageColor(r.stage) }
       ]))}
-      <table style="margin-top:14px"><thead><tr><th>Stage</th><th>Target</th><th>Actual</th><th>Variance</th><th>% of Target</th></tr></thead>
+      <div class="table-wrap wide" style="margin-top:14px"><table><thead><tr><th>Stage</th><th>Target</th><th>Actual</th><th>Variance</th><th>% of Target</th></tr></thead>
       <tbody>${rows.map(r => `<tr><td>${stageBadge(r.stage)}</td><td>${r.target}</td><td>${r.actual}</td>
         <td style="color:${r.actual - r.target >= 0 ? 'var(--green)' : 'var(--red)'}">${r.actual - r.target >= 0 ? "+" : ""}${r.actual - r.target}</td>
-        <td>${r.target ? Math.round(r.actual / r.target * 100) : 0}%</td></tr>`).join("")}</tbody></table>
+        <td>${r.target ? Math.round(r.actual / r.target * 100) : 0}%</td></tr>`).join("")}</tbody></table></div>
     </div>
   `;
 }
 
+// Scrolls rather than setting location.hash — an "#sec-…" hash would fire hashchange
+// and send router() through a pointless full re-render of the page being scrolled.
+function jumpToSection(id) {
+  const el = document.getElementById(id);
+  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function confirmResetDemoData() {
+  confirmModal({
+    title: "Reset demo data?",
+    message: "This restores the seeded demo dataset. Every lead, note and application created during this session will be discarded.",
+    confirmLabel: "Reset Demo Data",
+    danger: true,
+    onConfirm: () => {
+      resetDB();          // also restores DB.currentUserId to the seeded default...
+      resetViewState();
+      renderTopBar();     // ...so the role/user selects must be redrawn to match,
+      renderSidebar();    // and the nav re-filtered for whoever that now is.
+      renderNotificationBell();
+      go("#/dashboard");
+      toast("Demo data reset to the seeded state.", "success");
+    }
+  });
+}
+
+// Academic Admin dashboard — pending application confirmations and pending registrations,
+// with a follow-up reminder for anything sitting in the queue too long (Application Verification).
+function renderAcademicAdminDashboard(root) {
+  const leads = visibleLeads(); // already scoped to applications in flight for this role
+  const pendingConfirm = pendingConfirmationLeads(leads).sort((a, b) => new Date(a.applicationForm.reviewedAt) - new Date(b.applicationForm.reviewedAt));
+  const pendingReg = pendingRegistrationLeads(leads).sort((a, b) => new Date(a.applicationForm.pushedToAdmin.pushedAt) - new Date(b.applicationForm.pushedToAdmin.pushedAt));
+  const CONFIRM_SLA_DAYS = 2;
+
+  root.innerHTML = `
+    <div class="hero">
+      <div class="hero-left">
+        <h1>Welcome back, <b>${esc((getCurrentUser().name || "").split(/\s+/)[0])}</b></h1>
+        <div class="sub">Academic Admin — Application Verification workspace</div>
+      </div>
+      <div class="hero-stats">
+        <div class="hstat"><div class="hs-value">${pendingConfirm.length}</div><div class="hs-label"><i>${icon("note")}</i>Pending Confirmations</div></div>
+        <div class="hstat"><div class="hs-value">${pendingReg.length}</div><div class="hs-label"><i>${icon("cap")}</i>Pending Registrations</div></div>
+      </div>
+    </div>
+
+    <div class="card" style="border-left:3px solid var(--amber);margin-top:18px">
+      <h3>${icon("bell")} Pending Application Confirmations <span class="pill">follow-up reminder — ${CONFIRM_SLA_DAYS}d SLA</span></h3>
+      ${pendingConfirm.length ? `
+        <div class="table-wrap"><table><thead><tr><th>Student</th><th>Program</th><th>Reviewed</th><th>Waiting</th><th></th></tr></thead>
+        <tbody>${pendingConfirm.map(l => {
+          const days = daysAgo(l.applicationForm.reviewedAt);
+          return `<tr>
+            <td><b>${esc(l.name)}</b></td>
+            <td>${esc(l.program) || "—"}</td>
+            <td>${fmtDateTime(l.applicationForm.reviewedAt)}</td>
+            <td>${days >= CONFIRM_SLA_DAYS ? `<span style="color:var(--red);font-weight:600">${days}d — Overdue</span>` : `${days}d`}</td>
+            <td><button class="btn sm secondary" onclick="openLeadModal('${l.id}','application')">Review &amp; Confirm</button></td>
+          </tr>`;
+        }).join("")}</tbody></table></div>
+      ` : `<div class="empty-state">No applications waiting on confirmation.</div>`}
+    </div>
+
+    <div class="card" style="margin-top:18px">
+      <h3>Pending Registrations <span class="pill">pushed by counsellor, awaiting SMS transfer</span></h3>
+      ${pendingReg.length ? `
+        <div class="table-wrap"><table><thead><tr><th>Student</th><th>Program</th><th>Pushed</th><th></th></tr></thead>
+        <tbody>${pendingReg.map(l => `<tr>
+            <td><b>${esc(l.name)}</b></td>
+            <td>${esc(l.program) || "—"}</td>
+            <td>${fmtDateTime(l.applicationForm.pushedToAdmin.pushedAt)}</td>
+            <td><button class="btn sm secondary" onclick="openLeadModal('${l.id}','application')">Open</button></td>
+          </tr>`).join("")}</tbody></table></div>
+      ` : `<div class="empty-state">No students waiting on registration transfer.</div>`}
+    </div>
+  `;
+}
+
+/* ============================================================
+   APPLICATION VERIFICATION — Academic Admin's dedicated workspace
+   ============================================================ */
+function renderAppVerification(root) {
+  const leads = visibleLeads();
+  state.avTab = state.avTab || "pending";
+  const tabs = [
+    ["pending", "Pending Confirmation", pendingConfirmationLeads(leads)],
+    ["confirmed", "Confirmed", leads.filter(l => l.applicationForm.academicConfirmation.status === "Confirmed")],
+    ["registration", "Pending Registration", pendingRegistrationLeads(leads)]
+  ];
+  const active = tabs.find(t => t[0] === state.avTab) || tabs[0];
+  const rows = active[2];
+
+  root.innerHTML = `
+    <div class="page-header"><div><h1>Application Verification</h1><div class="sub">Review submitted application forms and offer letters, confirm qualifications and documents (Academic Admin)</div></div></div>
+    <div class="tabs">${tabs.map(([k, l, r]) => `<div class="tab ${state.avTab === k ? "active" : ""}" data-k="${k}">${l} <span class="count">${r.length}</span></div>`).join("")}</div>
+    <div class="table-wrap card">
+    <table><thead><tr><th>Student</th><th>Program</th><th>University</th><th>Application Status</th><th>Assigned Counsellor</th><th></th></tr></thead>
+    <tbody>
+      ${rows.map(l => `
+        <tr>
+          <td><b>${esc(l.name)}</b><div class="small-muted">${esc(l.mobile)}</div></td>
+          <td>${esc(l.program) || "—"}</td>
+          <td>${esc(l.university) || "—"}</td>
+          <td>${applicationStatusBadge(l.applicationForm)}</td>
+          <td>${esc(userName(l.assignedTo))}</td>
+          <td><button class="btn sm secondary" onclick="openLeadModal('${l.id}','application')">Open</button></td>
+        </tr>`).join("") || `<tr><td colspan="6" class="empty-state">Nothing here right now.</td></tr>`}
+    </tbody></table>
+    </div>
+  `;
+  document.querySelectorAll(".tabs .tab").forEach(t => t.onclick = () => { state.avTab = t.dataset.k; renderAppVerification(root); });
+}
+
 // Individual Counsellor Dashboard View (Counsellor role) / Manager Dashboard View (Manager and above) —
 // same programme-wise + target-vs-actual breakdown, scoped by visibleLeads() per role (UC26/UC27/UC29).
+// Counsellor-pipeline view. Roles with no counselling remit (Finance, Agent, Commission
+// Admin) previously got all of this too — eight cards of programme breakdowns that mean
+// nothing for their job. Gate it to the roles that actually own leads.
+const ROLE_STATUS_DASHBOARD_ROLES = ["Counsellor", "Manager", "Head of Marketing", "CEO", "Admin"];
+
 function renderRoleStatusDashboard(leads) {
+  if (!ROLE_STATUS_DASHBOARD_ROLES.includes(currentRole())) return "";
   const isManagerUp = ["Manager", "Head of Marketing", "CEO", "Admin"].includes(currentRole());
   const suffix = isManagerUp ? " — All Counsellors" : "";
   const title = isManagerUp ? "Manager Dashboard View" : "Individual Counsellor Dashboard View";
+  const progTab = state.dashProgTab = state.dashProgTab || "leads";
 
   const qualified = leads.filter(l => !l.deactivated && (l.stage === "Qualified" || l.stage === "Converted"));
   const enrolled = leads.filter(l => !l.deactivated && l.stage === "Converted");
   const offerCond = detailedStatusCount(leads, "Offer Received Conditional");
   const offerUncond = detailedStatusCount(leads, "Offer Received Unconditional");
-
-  const followUpLeads = leads.filter(l => !l.deactivated && l.stage !== "Closed" && l.nextFollowUp);
-  const overdue = followUpLeads.filter(l => followUpStatus(l) === "Overdue").length;
-  const today = followUpLeads.filter(l => followUpStatus(l) === "Today").length;
-  const upcoming = followUpLeads.filter(l => followUpStatus(l) === "Upcoming").length;
 
   const counsellorIds = isManagerUp
     ? (currentRole() === "Manager" ? teamUserIds(getCurrentUser().id) : DB.users.filter(u => u.role === "Counsellor").map(u => u.id))
@@ -295,27 +478,34 @@ function renderRoleStatusDashboard(leads) {
     .concat([{ label: "No Intake Assigned", value: applicationsReceived.filter(l => !l.intakeId).length }])
     .filter(r => r.value > 0);
 
+  // Pending Offer Dashboard — offers released by Academic Admin but not yet sent to the student
+  const pendingOffers = pendingOfferLeads(leads.filter(l => !l.deactivated));
+
+  // Programme-wise breakdowns share one card with a tab strip. As three separate cards
+  // they pushed everything else below the fold for the same information.
+  window.__progWiseData = {
+    leads: programWiseCounts(leads.filter(l => !l.deactivated)),
+    qualified: programWiseCounts(qualified),
+    enrolled: programWiseCounts(enrolled)
+  };
+
   return `
-    <h2 style="margin:26px 0 4px">${esc(title)}<span class="pill">${esc(currentRole())}</span></h2>
+    <h2 id="sec-role" style="margin:26px 0 4px">${esc(title)}<span class="pill">${esc(currentRole())}</span></h2>
     <div class="two-col">
       <div class="card">
-        <h3>Total Leads Programme Wise${suffix}</h3>
-        ${simpleBarChart(programWiseCounts(leads.filter(l => !l.deactivated)))}
-      </div>
-      <div class="card">
-        <h3>Total Qualified Leads Programme Wise${suffix}</h3>
-        ${simpleBarChart(programWiseCounts(qualified))}
-      </div>
-      <div class="card">
-        <h3>Total Programme Wise Enrolled${suffix}</h3>
-        ${simpleBarChart(programWiseCounts(enrolled))}
+        <h3>Programme-Wise Breakdown${suffix}</h3>
+        <div class="tabs" id="progWiseTabs">
+          ${[["leads", "All Leads"], ["qualified", "Qualified"], ["enrolled", "Enrolled"]]
+            .map(([k, label]) => `<div class="tab ${progTab === k ? "active" : ""}" data-k="${k}" onclick="setProgWiseTab('${k}')">${label}</div>`).join("")}
+        </div>
+        <div id="progWiseChart">${simpleBarChart(window.__progWiseData[progTab])}</div>
       </div>
       <div class="card">
         <h3>Offer Received${suffix}</h3>
-        <div style="display:flex;gap:10px;text-align:center;">
-          <div style="flex:1"><div style="font-size:24px;font-weight:700;color:var(--amber)">${offerCond}</div><div class="small-muted">Conditional</div></div>
-          <div style="flex:1"><div style="font-size:24px;font-weight:700;color:var(--green)">${offerUncond}</div><div class="small-muted">Unconditional</div></div>
-        </div>
+        ${statTriple([
+          { label: "Conditional", value: offerCond, color: "var(--amber)" },
+          { label: "Unconditional", value: offerUncond, color: "var(--green)" }
+        ])}
       </div>
       <div class="card">
         <h3>Applications Received${suffix} <span class="pill">Counsellor Application Dashboard</span></h3>
@@ -323,22 +513,34 @@ function renderRoleStatusDashboard(leads) {
         <p class="small-muted" style="margin-top:8px">Total: <b>${applicationsReceived.length}</b> application(s) received (status Submitted or Reviewed).</p>
       </div>
       <div class="card">
-        <h3>Target vs Actual${suffix} <span class="pill">UC3</span></h3>
-        ${targetRows.length ? simpleBarChart(targetRows.flatMap(r => [
-          { label: r.label + " (Target)", value: r.target, color: "#94a3b8" },
-          { label: r.label + " (Actual)", value: r.actual, color: "#2563eb" }
-        ])) : `<p class="small-muted">No targets set.</p>`}
+        <h3>Pending Offers${suffix} <span class="pill">Pending Offer Dashboard</span></h3>
+        <p class="small-muted">Offers released by Academic Admin but not yet sent to the student — follow up on these.</p>
+        ${pendingOffers.length ? `<div class="table-wrap"><table><thead><tr><th>Student</th><th>Released</th><th></th></tr></thead>
+          <tbody>${pendingOffers.slice(0, 8).map(l => `<tr>
+            <td><b>${esc(l.name)}</b></td>
+            <td>${fmtDateTime(l.applicationForm.offerRelease.releasedAt)}</td>
+            <td><button class="btn sm ghost" onclick="openLeadModal('${l.id}','application')">Open</button></td>
+          </tr>`).join("")}</tbody></table></div>
+          ${pendingOffers.length > 8 ? `<p class="small-muted" style="margin-top:6px">+${pendingOffers.length - 8} more</p>` : ""}`
+          : `<p class="small-muted">No pending offers right now.</p>`}
       </div>
       <div class="card">
-        <h3>Follow Up Status${suffix}</h3>
-        <div style="display:flex;gap:10px;text-align:center;">
-          <div style="flex:1"><div style="font-size:24px;font-weight:700;color:var(--red)">${overdue}</div><div class="small-muted">Overdue</div></div>
-          <div style="flex:1"><div style="font-size:24px;font-weight:700;color:var(--amber)">${today}</div><div class="small-muted">Due Today</div></div>
-          <div style="flex:1"><div style="font-size:24px;font-weight:700;color:var(--green)">${upcoming}</div><div class="small-muted">Upcoming</div></div>
-        </div>
+        <h3>Target vs Actual${suffix} <span class="pill">UC3</span></h3>
+        ${targetRows.length ? simpleBarChart(targetRows.flatMap(r => [
+          { label: r.label + " (Target)", value: r.target, color: CHART.muted },
+          { label: r.label + " (Actual)", value: r.actual, color: CHART.primary }
+        ])) : `<p class="small-muted">No targets set.</p>`}
       </div>
     </div>
   `;
+}
+
+// Swaps the programme-wise chart in place — no full dashboard re-render.
+function setProgWiseTab(k) {
+  state.dashProgTab = k;
+  document.querySelectorAll("#progWiseTabs .tab").forEach(t => t.classList.toggle("active", t.dataset.k === k));
+  const el = document.getElementById("progWiseChart");
+  if (el) el.innerHTML = simpleBarChart(window.__progWiseData[k]);
 }
 
 /* ============================================================
@@ -353,12 +555,12 @@ function renderLeads(root) {
     <div class="page-header">
       <div><h1>Leads</h1><div class="sub">${leads.length} leads visible to you (${esc(currentRole())} view — row-level security applied)</div></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
-        <button class="btn secondary" onclick="openExhibitionModal()">📱 Exhibition Quick Capture</button>
-        <button class="btn secondary" onclick="openBulkUploadModal()">⬆ Bulk Upload</button>
+        <button class="btn secondary" onclick="openExhibitionModal()">${icon("phone")} Exhibition Quick Capture</button>
+        <button class="btn secondary" onclick="openBulkUploadModal()">${icon("upload")} Bulk Upload</button>
         <button class="btn" onclick="openLeadModal()">+ New Lead</button>
       </div>
     </div>
-    ${fullVisibility ? `<div class="notice info">🌐 Full, unrestricted lead visibility granted for strategic oversight — no row-level filtering applied to this role (UC29). Access is still logged in the Audit Log (UC80).</div>` : ""}
+    ${fullVisibility ? `<div class="notice info">${icon("globe")} Full, unrestricted lead visibility granted for strategic oversight — no row-level filtering applied to this role (UC29). Access is still logged in the Audit Log (UC80).</div>` : ""}
 
     <div class="toolbar">
       <input type="text" id="leadSearch" placeholder="Search name, mobile, email..." value="${esc(f.search)}">
@@ -367,10 +569,10 @@ function renderLeads(root) {
       <select id="filterSource"><option value="">All Sources</option>${picklist('leadSources').map(s => `<option ${f.source === s ? "selected" : ""}>${s}</option>`).join("")}</select>
       <select id="filterDigitalSub" class="${f.source === "Digital" ? "" : "hidden"}" title="Digital lead sub-source (UC25)"><option value="">All Digital Sub-Sources — UC25</option>${picklist('digitalSubSources').map(s => `<option ${f.digitalSub === s ? "selected" : ""}>${s}</option>`).join("")}</select>
       <select id="filterDomain"><option value="">All Domains / Branches</option>${picklist('domains').map(d => `<option ${f.domain === d ? "selected" : ""}>${d}</option>`).join("")}</select>
-      <button class="btn secondary sm" onclick="openSaveSegmentModal()">💾 Save as Segment</button>
-      ${canBulkAction() ? `<button class="btn secondary sm ${f.nonCollectible ? "danger" : ""}" id="nonCollectibleBtn" title="UC40">🎯 Non-Collectible Candidates</button><button class="btn secondary sm" id="bulkAssignBtn">Bulk Assign</button><button class="btn secondary sm" id="bulkDeactivateBtn">Bulk Deactivate Non-Collectible</button><button class="btn secondary sm" id="bulkIntakeBtn">Bulk Assign Intake</button>` : ""}
+      <button class="btn secondary sm" onclick="openSaveSegmentModal()">${icon("save")} Save as Segment</button>
+      ${canBulkAction() ? `<button class="btn secondary sm ${f.nonCollectible ? "danger" : ""}" id="nonCollectibleBtn" title="UC40">${icon("target")} Non-Collectible Candidates</button><button class="btn secondary sm" id="bulkAssignBtn">Bulk Assign</button><button class="btn secondary sm" id="bulkDeactivateBtn">Bulk Deactivate Non-Collectible</button><button class="btn secondary sm" id="bulkIntakeBtn">Bulk Assign Intake</button><span id="selCount" class="sel-count"></span>` : ""}
     </div>
-    ${f.nonCollectible ? `<div class="notice">🎯 Showing Non-Collectible Candidates — leads with no activity for 14+ days that are still Open/Qualified (UC40 pre-defined filter). Select rows and click "Bulk Deactivate" to clear them out.</div>` : ""}
+    ${f.nonCollectible ? `<div class="notice">${icon("target")} Showing Non-Collectible Candidates — leads with no activity for 14+ days that are still Open/Qualified (UC40 pre-defined filter). Select rows and click "Bulk Deactivate" to clear them out.</div>` : ""}
     ${(DB.segments || []).length ? `<div class="chip-row">${DB.segments.map((s, idx) => `<div class="chip" onclick='applySegment(${idx})'>${esc(s.name)}</div>`).join("")}</div>` : ""}
 
     <div class="tabs" id="leadTabs">
@@ -389,7 +591,9 @@ function renderLeads(root) {
   document.getElementById("filterSource").onchange = e => { f.source = e.target.value; document.getElementById("filterDigitalSub").classList.toggle("hidden", f.source !== "Digital"); renderLeadTable(); };
   document.getElementById("filterDigitalSub").onchange = e => { f.digitalSub = e.target.value; renderLeadTable(); };
   document.getElementById("filterDomain").onchange = e => { f.domain = e.target.value; renderLeadTable(); };
-  document.querySelectorAll("#leadTabs .tab").forEach(t => t.onclick = () => { state.leadTab = t.dataset.tab; renderLeads(root); });
+  // Changing stage tab shows a different lead set — carrying a selection across would let
+  // a bulk action hit rows the user can no longer see.
+  document.querySelectorAll("#leadTabs .tab").forEach(t => t.onclick = () => { state.leadTab = t.dataset.tab; state.selectedLeadIds = []; renderLeads(root); });
   if (canBulkAction()) {
     document.getElementById("bulkAssignBtn").onclick = openBulkAssignModal;
     document.getElementById("bulkDeactivateBtn").onclick = openBulkDeactivateModal;
@@ -433,7 +637,7 @@ function renderNotQualified(root) {
     <div class="page-header">
       <div><h1>Not-Qualified Leads</h1><div class="sub">${leads.length} lead(s) that don't currently meet the qualification criteria (${esc(currentRole())} view)</div></div>
     </div>
-    <div class="notice info">ℹ️ Leads land here automatically once their Detailed Status is set to one of the admin-configured "Not Qualified Lead" statuses. Use "Push to Qualified" to move a lead back into the active pipeline once it meets the criteria.</div>
+    <div class="notice info">${icon("info")} Leads land here automatically once their Detailed Status is set to one of the admin-configured "Not Qualified Lead" statuses. Use "Push to Qualified" to move a lead back into the active pipeline once it meets the criteria.</div>
     ${leads.length ? `
     <div class="table-wrap card">
     <table>
@@ -564,7 +768,7 @@ function renderLeadTable() {
   if (!wrap) return;
   const leads = filteredLeadsForTab();
   if (!leads.length) {
-    wrap.innerHTML = `<div class="empty-state">No leads in this stage. (UC23 - AF1)</div>`;
+    wrap.innerHTML = `<div class="empty-state">No leads in this stage yet.</div>`;
     return;
   }
   wrap.innerHTML = `
@@ -577,10 +781,12 @@ function renderLeadTable() {
       <tbody>
         ${leads.map(l => `
           <tr>
-            ${canBulkAction() ? `<td><input type="checkbox" class="rowSel" data-id="${l.id}"></td>` : ""}
+            ${canBulkAction() ? `<td><input type="checkbox" class="rowSel" data-id="${l.id}" ${selectedLeadIds().includes(l.id) ? "checked" : ""} onchange="toggleLeadSelection('${l.id}',this.checked)"></td>` : ""}
             <td><a href="javascript:void(0)" onclick="openLeadModal('${l.id}')"><b>${esc(l.name)}</b></a><div class="small-muted">${esc(l.mobile)}</div></td>
             <td>${esc(l.leadSource)}${l.digitalSubSource ? " · " + esc(l.digitalSubSource) : ""}</td>
-            <td>${esc(l.university) || "<span class='small-muted'>—</span>"}<div class="small-muted">${esc(l.program) || ""}</div></td>
+            <td>${l.university || l.program
+                ? esc(l.university || l.program) + (l.university && l.program ? `<div class="small-muted">${esc(l.program)}</div>` : "")
+                : "<span class='small-muted'>—</span>"}</td>
             <td>${esc(userName(l.assignedTo))}</td>
             <td>${l.intakeId ? esc((DB.intakes.find(i => i.id === l.intakeId) || {}).name || "") : "<span class='small-muted'>—</span>"}</td>
             <td>${stageBadge(l.stage)}</td>
@@ -592,7 +798,41 @@ function renderLeadTable() {
     </div>
   `;
   const selAll = document.getElementById("selAll");
-  if (selAll) selAll.onchange = () => document.querySelectorAll(".rowSel").forEach(c => c.checked = selAll.checked);
+  if (selAll) selAll.onchange = () => {
+    document.querySelectorAll(".rowSel").forEach(c => {
+      c.checked = selAll.checked;
+      toggleLeadSelection(c.dataset.id, selAll.checked, true);
+    });
+    renderSelectionCount();
+  };
+  renderSelectionCount();
+}
+
+/* Bulk selection lives in state, not in the DOM. The lead search re-renders the table on
+   every keystroke, which used to wipe an in-progress selection silently. */
+function selectedLeadIds() {
+  if (!Array.isArray(state.selectedLeadIds)) state.selectedLeadIds = [];
+  return state.selectedLeadIds;
+}
+function toggleLeadSelection(id, on, skipRender) {
+  const sel = selectedLeadIds();
+  const i = sel.indexOf(id);
+  if (on && i < 0) sel.push(id);
+  if (!on && i >= 0) sel.splice(i, 1);
+  if (!skipRender) renderSelectionCount();
+}
+function clearLeadSelection() {
+  state.selectedLeadIds = [];
+  document.querySelectorAll(".rowSel").forEach(c => { c.checked = false; });
+  renderSelectionCount();
+}
+function renderSelectionCount() {
+  const el = document.getElementById("selCount");
+  if (!el) return;
+  const n = selectedLeadIds().length;
+  el.innerHTML = n
+    ? `<b>${n}</b> selected <button class="btn sm ghost" onclick="clearLeadSelection()" title="Clear selection">${icon("x")}</button>`
+    : `<span class="small-muted">None selected</span>`;
 }
 
 function reactivateLead(id) {
@@ -607,7 +847,10 @@ function reactivateLead(id) {
 }
 
 function getSelectedLeadIds() {
-  return Array.from(document.querySelectorAll(".rowSel:checked")).map(c => c.dataset.id);
+  // Reads persisted selection state, so it survives search/filter re-renders. Scoped to
+  // rows currently in view so a bulk action can't touch leads the filter excludes.
+  const visible = new Set(filteredLeadsForTab().map(l => l.id));
+  return selectedLeadIds().filter(id => visible.has(id));
 }
 
 function openBulkAssignModal() {
@@ -620,7 +863,7 @@ function openBulkAssignModal() {
       <p class="small-muted">${ids.length} lead(s) selected.</p>
       <div class="field"><label>Assign To</label>
         <select id="bulkAssignTarget">
-          <option value="__auto__">🔀 Auto-distribute (round robin)</option>
+          <option value="__auto__">Auto-distribute (round robin)</option>
           ${counsellors.map(c => `<option value="${c.id}">${c.name}</option>`).join("")}
         </select>
       </div>
@@ -721,7 +964,7 @@ function generateSampleImport() {
   }
   logAudit("BULK_IMPORT", importType, `${count} rows imported`);
   saveDB();
-  document.getElementById("uploadSummary").innerHTML = `<div class="notice success">✅ ${count} ${importType.toLowerCase()} imported successfully and placed in the follow-up workflow.</div>`;
+  document.getElementById("uploadSummary").innerHTML = `<div class="notice success">${icon("checkCircle")} ${count} ${importType.toLowerCase()} imported successfully and placed in the follow-up workflow.</div>`;
   setTimeout(() => { closeModal(); router(); }, 900);
 }
 function processCsvUpload() {
@@ -765,7 +1008,7 @@ function processCsvUpload() {
 /* ============================================================
    LEAD DETAIL / CREATE MODAL  (M1 dynamic fields + M2 stage logic)
    ============================================================ */
-function openLeadModal(leadId) {
+function openLeadModal(leadId, initialTab) {
   const isNew = !leadId;
   const lead = isNew ? null : DB.leads.find(l => l.id === leadId);
   window.__editingLead = isNew ? {
@@ -780,8 +1023,23 @@ function openLeadModal(leadId) {
     createdAt: new Date().toISOString(), activity: []
   } : JSON.parse(JSON.stringify(lead));
 
-  window.__leadModalTab = "details";
+  window.__leadModalTab = initialTab || "details";
+  window.__gradeRowRerender = null; // reset any override left behind by the Apply Online page
   renderLeadModal();
+}
+
+// Switches tabs WITHOUT rebuilding the modal shell. Rebuilding (the old
+// `renderLeadModal()` call) discarded every unsaved free-text edit, reset the body
+// scroll and replayed the open animation on each click. Swapping only the tab body
+// keeps typed input intact — syncFieldsFromDOM() guards each read with `if (get(id))`,
+// so it safely captures whichever fields are currently mounted.
+function switchLeadModalTab(k) {
+  syncFieldsFromDOM();
+  window.__leadModalTab = k;
+  document.querySelectorAll(".detail-tabs .tab").forEach(t => t.classList.toggle("active", t.dataset.k === k));
+  const body = document.querySelector(".modal-body");
+  if (body) body.scrollTop = 0;
+  renderLeadModalTab();
 }
 
 function renderLeadModal() {
@@ -795,7 +1053,7 @@ function renderLeadModal() {
     <div class="modal-header"><h2>${isNew ? "New Lead (UC21/UC22)" : esc(L.name)}</h2><button class="close-x" onclick="closeModal()">&times;</button></div>
     <div class="modal-body">
       ${!isNew ? `<div style="margin-bottom:10px">${stageBadge(L.stage)} ${L.deactivated ? "<span class='badge deactivated'>Deactivated</span>" : ""} ${L.resultsPending ? "<span class='badge pending'>Pending Results</span>" : ""} ${applicationStatusBadge(L.applicationForm)}</div>` : ""}
-      <div class="detail-tabs">${tabs.map(([k, label]) => `<div class="tab ${tab === k ? "active" : ""}" onclick="window.__leadModalTab='${k}';renderLeadModal();">${label}</div>`).join("")}</div>
+      <div class="detail-tabs">${tabs.map(([k, label]) => `<div class="tab ${tab === k ? "active" : ""}" data-k="${k}" onclick="switchLeadModalTab('${k}')">${label}</div>`).join("")}</div>
       <div id="leadModalTabContent"></div>
     </div>
     <div class="modal-footer" id="leadModalFooter"></div>
@@ -843,7 +1101,7 @@ function renderLeadModalTab() {
           <select id="f_assigned" ${!canTransferLeads() && !isNew ? "disabled" : ""}>
             ${DB.users.filter(u => u.role === "Counsellor").map(u => `<option value="${u.id}" ${L.assignedTo === u.id ? "selected" : ""}>${u.name}</option>`).join("")}
           </select>
-          ${!canTransferLeads() && !isNew ? '<div class="small-muted">🔒 Only Managers can reassign leads (UC69)</div>' : ""}
+          ${!canTransferLeads() && !isNew ? '<div class="small-muted">' + icon("lock") + ' Only Managers can reassign leads (UC69)</div>' : ""}
         </div>
         <div class="field"><label>Domain / Branch <span class="pill">UC30</span></label><select id="f_domain">${picklist('domains').map(d => `<option ${L.domain === d ? "selected" : ""}>${d}</option>`).join("")}</select></div>
         <div class="field"><label>Detailed Status</label>
@@ -931,6 +1189,7 @@ function renderLeadModalTab() {
         <div class="field"><label>Exam Type <span class="pill">UC57</span></label>
           <select id="f_examType"><option ${L.examType === "Local A/L" ? "selected" : ""}>Local A/L</option><option ${L.examType === "London A/L" ? "selected" : ""}>London A/L</option></select>
         </div>
+        <div id="examTypeNotice"></div>
         ${gradeTableHTML("ol", L)}
         ${gradeTableHTML("al", L)}
         ${langBlock}
@@ -938,15 +1197,18 @@ function renderLeadModalTab() {
       document.getElementById("f_pending").onchange = e => { L.resultsPending = e.target.checked; renderLeadModalTab(); };
       document.getElementById("f_examType").onchange = e => {
         const newVal = e.target.value;
-        // UC57 - AF1: A/L grades are scale-specific, so switching exam type invalidates them
+        // UC57 - AF1: A/L grades are scale-specific, so switching exam type invalidates them.
+        // Warn inline (this is inside the lead modal — confirmModal would replace it) and
+        // hold the select on its old value until the user commits.
         const hasAL = (L.alSubjects || []).some(r => r.grade);
         if (hasAL && newVal !== L.examType) {
-          if (!confirm(`Changing exam type will clear the ${(L.alSubjects || []).length} recorded A/L grade(s), since ${newVal} uses a different grading scale (UC57 - AF1). Continue?`)) {
-            e.target.value = L.examType;
-            return;
-          }
-          L.alSubjects = [];
-          L.alResult = "";
+          e.target.value = L.examType;
+          const notice = document.getElementById("examTypeNotice");
+          if (notice) notice.innerHTML = `
+            <div class="notice">${icon("warn")} Switching to <b>${esc(newVal)}</b> clears the ${(L.alSubjects || []).length} recorded A/L grade(s) — the two exams use different grading scales (UC57 - AF1).
+            <div style="margin-top:8px"><button class="btn sm danger" onclick="confirmExamTypeChange('${esc(newVal)}')">Clear grades &amp; switch</button>
+            <button class="btn sm secondary" onclick="document.getElementById('examTypeNotice').innerHTML=''">Keep ${esc(L.examType)}</button></div></div>`;
+          return;
         }
         L.examType = newVal;
         renderLeadModalTab();
@@ -990,7 +1252,7 @@ function renderLeadModalTab() {
             <div style="margin-top:2px">${esc(t.note)}</div>
             ${t.dueAt ? `<div class="small-muted">Due: ${fmtDateTime(t.dueAt)}</div>` : ""}
           </div>
-          <button class="btn sm ghost" onclick="removeStageTask('${t.id}')" title="Remove">✕</button>
+          <button class="btn sm ghost" onclick="removeStageTask('${t.id}')" title="Remove">${icon("x")}</button>
         </div>`).join("") : `<div class="empty-state">No notes or tasks recorded yet.</div>`}
     `;
     document.querySelectorAll(".taskDoneChk").forEach(cb => cb.onchange = e => {
@@ -1002,56 +1264,8 @@ function renderLeadModalTab() {
   }
 
   if (tab === "application") {
-    L.applicationForm = L.applicationForm || defaultApplicationForm();
-    const af = L.applicationForm;
-    body.innerHTML = `
-      <p class="small-muted">Application form status is visible here on the lead record. Sending, review and offer/payment-plan dispatch are simulated the same way conversion emails are elsewhere in this demo — no real mail server (see README "Demo limitations").</p>
-      <div class="card" style="box-shadow:none;margin-bottom:16px">
-        <h3>Application Form ${applicationStatusBadge(af)}</h3>
-        ${af.sentAt ? `<p class="small-muted">Sent ${fmtDateTime(af.sentAt)}${af.submittedAt ? " · Submitted " + fmtDateTime(af.submittedAt) : ""}${af.reviewedAt ? " · Reviewed " + fmtDateTime(af.reviewedAt) + " by " + esc(af.reviewedBy) : ""}</p>` : `<p class="small-muted">Not yet sent to the student.</p>`}
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
-          <button class="btn sm ${af.status === "Not Sent" ? "" : "secondary"}" onclick="sendApplicationForm()">${af.status === "Not Sent" ? "📧 Send Application Form" : "📧 Resend Application Form"}</button>
-          ${af.status === "Sent" ? `<button class="btn sm secondary" onclick="markApplicationSubmitted()">Mark as Submitted (received from student)</button>` : ""}
-        </div>
-      </div>
-
-      ${af.status === "Submitted" || af.status === "Reviewed" ? `
-      <div class="card" style="box-shadow:none;margin-bottom:16px">
-        <h3>Review Submitted Application <span class="pill">verify accuracy</span></h3>
-        <p class="small-muted">Edit any field the student got wrong, then confirm the review. This mirrors the student's own submission back onto the lead record.</p>
-        <div class="grid-2">
-          <div class="field"><label>Full Name</label><input id="af_name" value="${esc(L.name)}"></div>
-          <div class="field"><label>Mobile</label><input id="af_mobile" value="${esc(L.mobile)}"></div>
-          <div class="field"><label>Email</label><input id="af_email" value="${esc(L.email)}"></div>
-          <div class="field"><label>Program</label><select id="af_program">${picklist('programs').map(p => `<option ${L.program === p ? "selected" : ""}>${p}</option>`).join("")}</select></div>
-          <div class="field"><label>University</label><select id="af_university"><option value="">-- Select --</option>${picklist('universities').map(u => `<option ${L.university === u ? "selected" : ""}>${u}</option>`).join("")}</select></div>
-          <div class="field"><label>Academic Summary</label><input id="af_academic" value="${esc(programType(L.program) === "Master's" ? L.bachelorsDegree + (L.bachelorsUniversity ? " — " + L.bachelorsUniversity : "") : (L.olResult || L.alResult ? [L.olResult, L.alResult].filter(Boolean).join(" / ") : ""))}" placeholder="e.g. 3A 2B (O/L)"></div>
-        </div>
-        <div style="display:flex;gap:8px;margin-top:8px">
-          <button class="btn sm" onclick="saveApplicationReview(${af.status !== "Reviewed"})">${af.status === "Reviewed" ? "Save Corrections" : "✓ Confirm Reviewed"}</button>
-        </div>
-      </div>` : ""}
-
-      ${af.status === "Reviewed" ? `
-      <div class="card" style="box-shadow:none;margin-bottom:16px">
-        <h3>Offer Letter ${af.offerLetter.status === "Issued" ? `<span class="badge converted">Issued — ${esc(af.offerLetter.type)}</span>` : `<span class="badge closed">Not Issued</span>`}</h3>
-        ${af.offerLetter.status === "Issued" ? `<p class="small-muted">Issued ${fmtDateTime(af.offerLetter.issuedAt)}</p>` : `
-          <div class="field" style="max-width:280px"><label>Offer Type</label><select id="af_offerType">${OFFER_TYPES.map(t => `<option>${t}</option>`).join("")}</select></div>
-          <button class="btn sm" onclick="issueOfferLetter()">🎓 Issue Offer Letter</button>`}
-      </div>
-
-      <div class="card" style="box-shadow:none;margin-bottom:16px">
-        <h3>Payment Plan ${af.paymentPlan.status === "Sent" ? `<span class="badge converted">Sent</span>` : `<span class="badge closed">Not Sent</span>`}</h3>
-        <div id="paymentPlanRows">
-          ${(af.paymentPlan.installments.length ? af.paymentPlan.installments : [{ label: "Registration Fee", amount: 25000, dueDate: todayStr() }]).map((row, i) => `
-            <div class="grid-2" data-row="${i}">
-              <div class="field"><label>Installment</label><input class="pp_label" value="${esc(row.label)}"></div>
-              <div class="field"><label>Amount (LKR)</label><input class="pp_amount" type="number" min="0" value="${row.amount}"></div>
-            </div>`).join("")}
-        </div>
-        ${af.paymentPlan.status === "Sent" ? `<p class="small-muted">Sent ${fmtDateTime(af.paymentPlan.sentAt)}</p>` : `<button class="btn sm secondary" onclick="addPaymentPlanRow()">+ Add Installment</button> <button class="btn sm" onclick="sendPaymentPlan()">💳 Send Payment Plan</button>`}
-      </div>` : ""}
-    `;
+    body.innerHTML = renderApplicationTabHTML(L);
+    bindApplicationTabHandlers(L);
   }
 
   if (tab === "timeline") {
@@ -1059,8 +1273,8 @@ function renderLeadModalTab() {
       <p class="small-muted">Chronological, read-only interaction log — every call, email and status change is captured automatically (UC66) and viewable per lead (UC67).</p>
       <ul class="timeline">${(L.activity || []).map(a => `<li><span class="ts">${fmtDateTime(a.ts)}</span> — <b>${esc(a.type)}</b> by ${esc(a.user)}: ${esc(a.text)}</li>`).join("") || "<li>No history yet.</li>"}</ul>
       ${(L.activity || []).length ? `<div style="margin-top:12px;display:flex;gap:8px">
-        <button class="btn sm secondary" onclick="exportLeadTimeline()">⬇ CSV</button>
-        <button class="btn sm" onclick="exportLeadTimelinePDF()" title="UC67 - AF1">📄 Export PDF</button>
+        <button class="btn sm secondary" onclick="exportLeadTimeline()">${icon("download")} CSV</button>
+        <button class="btn sm" onclick="exportLeadTimelinePDF()" title="UC67 - AF1">${icon("document")} Export PDF</button>
       </div>` : ""}
     `;
   }
@@ -1108,7 +1322,7 @@ function gradeTableHTML(kind, L) {
               <option value="">—</option>
               ${scale.map(g => `<option ${r.grade === g ? "selected" : ""}>${g}</option>`).join("")}
             </select></td>
-            <td><button class="btn sm ghost" onclick="removeGradeRow('${kind}',${i})" title="Remove subject">✕</button></td>
+            <td><button class="btn sm ghost" onclick="removeGradeRow('${kind}',${i})" title="Remove subject">${icon("x")}</button></td>
           </tr>`).join("")}</tbody>
       </table></div>` : `<p class="small-muted">No subjects recorded yet.</p>`}
       <datalist id="${kind}SubjectList">${subjects.map(s => `<option value="${esc(s)}">`).join("")}</datalist>
@@ -1163,12 +1377,26 @@ function markApplicationSubmitted() {
   L.applicationForm.status = "Submitted";
   L.applicationForm.submittedAt = new Date().toISOString();
   addActivity(L, "Update", "Application form received from student — pending counsellor review");
+  notifySubmissionRecipient(L);
   commitLeadEdit();
   toast("Application marked as submitted.", "success");
   renderLeadModalTab();
 }
+// Application Submission Notification — the assigned counsellor is notified via the system (bell)
+// and a simulated email the same way conversion emails are elsewhere in this demo. A website
+// application with no counsellor yet routes to Head of Marketing instead (see Website Leads).
+function notifySubmissionRecipient(lead) {
+  if (lead.assignedTo) {
+    notify(lead.assignedTo, lead.id, `Application submitted — ${lead.name}`, "Application Submitted");
+    addActivity(lead, "Automation", `Counsellor ${userName(lead.assignedTo)} notified by system and email of the new submission`);
+  } else {
+    notifyRole("Head of Marketing", lead.id, `Website application submitted, no counsellor assigned — ${lead.name}`, "Website Lead");
+    addActivity(lead, "Automation", "No counsellor assigned — Head of Marketing notified to review and assign (Website Leads)");
+  }
+}
 function saveApplicationReview(markReviewed) {
   const L = window.__editingLead;
+  if (L.applicationForm.academicConfirmation.status === "Confirmed") { toast("Locked — Academic Admin has already confirmed this application.", "error"); return; }
   L.name = document.getElementById("af_name").value.trim() || L.name;
   L.mobile = document.getElementById("af_mobile").value.trim() || L.mobile;
   L.email = document.getElementById("af_email").value.trim();
@@ -1179,13 +1407,64 @@ function saveApplicationReview(markReviewed) {
     L.applicationForm.reviewedAt = new Date().toISOString();
     L.applicationForm.reviewedBy = getCurrentUser().name;
     addActivity(L, "Update", `Application reviewed and verified by ${getCurrentUser().name}`);
+    notifyRole("Academic Admin", L.id, `Application reviewed and awaiting confirmation — ${L.name}`, "Pending Confirmation");
   } else {
     addActivity(L, "Update", "Application corrections saved after review");
   }
   commitLeadEdit();
-  toast(markReviewed ? "Application reviewed." : "Corrections saved.", "success");
+  toast(markReviewed ? "Application reviewed. Academic Admin notified for confirmation." : "Corrections saved.", "success");
   renderLeadModalTab();
 }
+
+/* ---------------- Academic Admin — Application Verification ---------------- */
+function confirmApplicationByAdmin() {
+  const L = window.__editingLead;
+  L.applicationForm.academicConfirmation = { status: "Confirmed", confirmedBy: getCurrentUser().name, confirmedAt: new Date().toISOString() };
+  addActivity(L, "Update", `Application and supporting documents confirmed by ${getCurrentUser().name} — now locked`);
+  commitLeadEdit();
+  toast("Application confirmed and locked.", "success");
+  renderLeadModalTab();
+}
+function releaseOfferToCounsellor() {
+  const L = window.__editingLead;
+  L.applicationForm.offerRelease = { status: "Released", releasedBy: getCurrentUser().name, releasedAt: new Date().toISOString() };
+  addActivity(L, "Update", `Offer released to counsellor ${userName(L.assignedTo)} by ${getCurrentUser().name}`);
+  notify(L.assignedTo, L.id, `Offer released — ${L.name}`, "Offer Released");
+  commitLeadEdit();
+  toast("Offer released to counsellor.", "success");
+  renderLeadModalTab();
+}
+
+/* ---------------- Head of Marketing discount approval ---------------- */
+function requestDiscountApproval() {
+  const L = window.__editingLead;
+  const percent = document.getElementById("da_percent").value;
+  const amount = document.getElementById("da_amount").value;
+  const note = document.getElementById("da_note").value.trim();
+  L.applicationForm.discountApproval = {
+    status: "Pending", requestedPercent: percent, requestedAmount: amount, note,
+    requestedBy: getCurrentUser().name, requestedAt: new Date().toISOString(), decidedBy: "", decidedAt: "", decisionNote: ""
+  };
+  addActivity(L, "Update", `Discount approval requested by ${getCurrentUser().name}${percent ? ` (${percent}%)` : ""}${amount ? ` (LKR ${amount})` : ""}${note ? " — " + note : ""}`);
+  notifyRole("Head of Marketing", L.id, `Discount approval requested — ${L.name}`, "Pending Approval");
+  commitLeadEdit();
+  toast("Discount approval requested — Head of Marketing notified.", "success");
+  renderLeadModalTab();
+}
+function decideDiscountApproval(approve) {
+  const L = window.__editingLead;
+  const note = document.getElementById("da_decisionNote") ? document.getElementById("da_decisionNote").value.trim() : "";
+  L.applicationForm.discountApproval.status = approve ? "Approved" : "Rejected";
+  L.applicationForm.discountApproval.decidedBy = getCurrentUser().name;
+  L.applicationForm.discountApproval.decidedAt = new Date().toISOString();
+  L.applicationForm.discountApproval.decisionNote = note;
+  addActivity(L, "Update", `Discount request ${approve ? "approved" : "rejected"} by ${getCurrentUser().name}${note ? " — " + note : ""}`);
+  notify(L.assignedTo, L.id, `Discount request ${approve ? "approved" : "rejected"} — ${L.name}`, approve ? "Approved" : "Rejected");
+  commitLeadEdit();
+  toast(`Discount request ${approve ? "approved" : "rejected"}.`, "success");
+  renderLeadModalTab();
+}
+
 function issueOfferLetter() {
   const L = window.__editingLead;
   const type = document.getElementById("af_offerType").value;
@@ -1211,8 +1490,401 @@ function sendPaymentPlan() {
   L.applicationForm.paymentPlan = { status: "Sent", installments, sentAt: new Date().toISOString() };
   addActivity(L, "Automation", `Payment plan (${installments.length} installment(s), total ${money(installments.reduce((s, r) => s + r.amount, 0))}) sent${L.email ? " to " + L.email : ""}`);
   commitLeadEdit();
-  toast("Payment plan sent.", "success");
+  toast("Payment plan sent — student can now proceed with payment.", "success");
   renderLeadModalTab();
+}
+
+/* ---------------- Student payment confirmation & registration hand-off ---------------- */
+function confirmPaymentReceived() {
+  const L = window.__editingLead;
+  L.applicationForm.paymentConfirmed = { status: "Confirmed", confirmedBy: getCurrentUser().name, confirmedAt: new Date().toISOString() };
+  addActivity(L, "Update", `Payment confirmed by ${getCurrentUser().name}`);
+  commitLeadEdit();
+  toast("Payment confirmed.", "success");
+  renderLeadModalTab();
+}
+function pushToAdminStaff() {
+  const L = window.__editingLead;
+  L.applicationForm.pushedToAdmin = { status: "Pushed", pushedBy: getCurrentUser().name, pushedAt: new Date().toISOString() };
+  addActivity(L, "Update", `Pushed to Admin Staff for registration by ${getCurrentUser().name}`);
+  notifyRole("Academic Admin", L.id, `Student pushed for registration — ${L.name}`, "Pending Registration");
+  commitLeadEdit();
+  toast("Pushed to Admin Staff for registration.", "success");
+  renderLeadModalTab();
+}
+function transferToSMS() {
+  const L = window.__editingLead;
+  L.applicationForm.smsTransfer = { status: "Transferred", transferredBy: getCurrentUser().name, transferredAt: new Date().toISOString() };
+  addActivity(L, "Automation", `Student transferred to the Student Management System by ${getCurrentUser().name}`);
+  commitLeadEdit();
+  toast("Student transferred to the Student Management System.", "success");
+  renderLeadModalTab();
+}
+
+/* ---------------- Application tab: composed view of the whole offer/registration pipeline ---------------- */
+function renderApplicationTabHTML(L) {
+  L.applicationForm = L.applicationForm || defaultApplicationForm();
+  const af = L.applicationForm;
+  const role = currentRole();
+  const locked = af.academicConfirmation.status === "Confirmed";
+
+  const sections = [];
+
+  sections.push(`
+    <div class="card" style="box-shadow:none;margin-bottom:16px">
+      <h3>Application Form ${applicationStatusBadge(af)}</h3>
+      ${af.sentAt ? `<p class="small-muted">Sent ${fmtDateTime(af.sentAt)}${af.submittedAt ? " · Submitted " + fmtDateTime(af.submittedAt) : ""}${af.reviewedAt ? " · Reviewed " + fmtDateTime(af.reviewedAt) + " by " + esc(af.reviewedBy) : ""}</p>` : `<p class="small-muted">Not yet sent to the student.</p>`}
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+        <button class="btn sm ${af.status === "Not Sent" ? "" : "secondary"}" onclick="sendApplicationForm()">${af.status === "Not Sent" ? icon("mail") + " Send Application Form" : icon("mail") + " Resend Application Form"}</button>
+        ${af.status === "Sent" ? `<button class="btn sm secondary" onclick="markApplicationSubmitted()">Mark as Submitted (received from student)</button>` : ""}
+        <button class="btn sm secondary" onclick="closeModal();go('#/apply?lead=${L.id}')" title="Opens the UCL-themed application form the student fills in">${icon("note")} Open Application Form (UCL Theme)</button>
+      </div>
+    </div>`);
+
+  if (af.status === "Submitted" || af.status === "Reviewed") {
+    sections.push(`
+      <div class="card" style="box-shadow:none;margin-bottom:16px">
+        <h3>Review Submitted Application <span class="pill">verify accuracy</span></h3>
+        ${locked ? `<div class="notice">${icon("lock")} Confirmed and locked by ${esc(af.academicConfirmation.confirmedBy)} on ${fmtDateTime(af.academicConfirmation.confirmedAt)} — no further edits.</div>` : `<p class="small-muted">Edit any field the student got wrong, then confirm the review. This mirrors the student's own submission back onto the lead record.</p>`}
+        <div class="grid-2">
+          <div class="field"><label>Full Name</label><input id="af_name" value="${esc(L.name)}" ${locked ? "disabled" : ""}></div>
+          <div class="field"><label>Mobile</label><input id="af_mobile" value="${esc(L.mobile)}" ${locked ? "disabled" : ""}></div>
+          <div class="field"><label>Email</label><input id="af_email" value="${esc(L.email)}" ${locked ? "disabled" : ""}></div>
+          <div class="field"><label>Program</label><select id="af_program" ${locked ? "disabled" : ""}>${picklist('programs').map(p => `<option ${L.program === p ? "selected" : ""}>${p}</option>`).join("")}</select></div>
+          <div class="field"><label>University</label><select id="af_university" ${locked ? "disabled" : ""}><option value="">-- Select --</option>${picklist('universities').map(u => `<option ${L.university === u ? "selected" : ""}>${u}</option>`).join("")}</select></div>
+          <div class="field"><label>Academic Summary</label><input id="af_academic" value="${esc(programType(L.program) === "Master's" ? L.bachelorsDegree + (L.bachelorsUniversity ? " — " + L.bachelorsUniversity : "") : (L.olResult || L.alResult ? [L.olResult, L.alResult].filter(Boolean).join(" / ") : ""))}" placeholder="e.g. 3A 2B (O/L)" disabled></div>
+        </div>
+        ${!locked ? `<div style="display:flex;gap:8px;margin-top:8px">
+          <button class="btn sm" onclick="saveApplicationReview(${af.status !== "Reviewed"})">${af.status === "Reviewed" ? "Save Corrections" : icon("check") + " Confirm Reviewed"}</button>
+        </div>` : ""}
+      </div>`);
+  }
+
+  if (af.status === "Reviewed") {
+    sections.push(`
+      <div class="card" style="box-shadow:none;margin-bottom:16px">
+        <h3>Academic Admin Verification ${locked ? `<span class="badge converted">Confirmed</span>` : `<span class="badge closed">Pending</span>`}</h3>
+        ${locked
+          ? `<p class="small-muted">Confirmed by ${esc(af.academicConfirmation.confirmedBy)} on ${fmtDateTime(af.academicConfirmation.confirmedAt)}. Qualifications and supporting documents verified.</p>`
+          : role === "Academic Admin"
+            ? `<p class="small-muted">Verify the submitted qualifications and supporting documents, then confirm to lock the application.</p><button class="btn sm" onclick="confirmApplicationByAdmin()">${icon("check")} Confirm Application</button>`
+            : `<p class="small-muted">Awaiting confirmation from Academic Admin before the offer can be released.</p>`}
+      </div>`);
+  }
+
+  if (locked) {
+    sections.push(`
+      <div class="card" style="box-shadow:none;margin-bottom:16px">
+        <h3>Offer Release <span class="pill">Admin → Counsellor</span> ${af.offerRelease.status === "Released" ? `<span class="badge converted">Released</span>` : `<span class="badge closed">Not Released</span>`}</h3>
+        ${af.offerRelease.status === "Released"
+          ? `<p class="small-muted">Released by ${esc(af.offerRelease.releasedBy)} on ${fmtDateTime(af.offerRelease.releasedAt)}.</p>`
+          : role === "Academic Admin"
+            ? `<button class="btn sm" onclick="releaseOfferToCounsellor()">${icon("send")} Release Offer to Counsellor</button>`
+            : `<p class="small-muted">Awaiting release from Academic Admin.</p>`}
+      </div>`);
+  }
+
+  if (af.offerRelease.status === "Released") {
+    const da = af.discountApproval;
+    sections.push(`
+      <div class="card" style="box-shadow:none;margin-bottom:16px">
+        <h3>Discount / Special Terms Approval <span class="pill">Head of Marketing</span> <span class="badge ${da.status === "Approved" ? "converted" : da.status === "Rejected" ? "closed" : da.status === "Pending" ? "pending" : "closed"}">${esc(da.status)}</span></h3>
+        ${da.status === "Not Requested" ? `
+          ${["Counsellor", "Manager", "Admin"].includes(role) ? `
+          <div class="grid-2">
+            <div class="field"><label>Discount %</label><input id="da_percent" type="number" min="0" max="100" placeholder="e.g. 10"></div>
+            <div class="field"><label>Or Fixed Amount (LKR)</label><input id="da_amount" type="number" min="0" placeholder="e.g. 25000"></div>
+          </div>
+          <div class="field"><label>Note</label><input id="da_note" placeholder="Reason / relevant detail for Head of Marketing"></div>
+          <button class="btn sm secondary" onclick="requestDiscountApproval()">Request Approval</button>
+          ` : `<p class="small-muted">No discount requested for this student.</p>`}
+        ` : `
+          <p class="small-muted">Requested by ${esc(da.requestedBy)} on ${fmtDateTime(da.requestedAt)}${da.requestedPercent ? ` — ${esc(da.requestedPercent)}%` : ""}${da.requestedAmount ? ` — LKR ${esc(da.requestedAmount)}` : ""}${da.note ? " — " + esc(da.note) : ""}</p>
+          ${da.status === "Pending" && role === "Head of Marketing" ? `
+            <div class="field"><label>Decision Note</label><input id="da_decisionNote" placeholder="optional"></div>
+            <button class="btn sm" onclick="decideDiscountApproval(true)">${icon("check")} Approve</button> <button class="btn sm danger" onclick="decideDiscountApproval(false)">${icon("x")} Reject</button>
+          ` : da.status !== "Pending" ? `<p class="small-muted">${esc(da.status)} by ${esc(da.decidedBy)} on ${fmtDateTime(da.decidedAt)}${da.decisionNote ? " — " + esc(da.decisionNote) : ""}</p>` : `<p class="small-muted">Awaiting Head of Marketing decision.</p>`}
+        `}
+      </div>
+
+      <div class="card" style="box-shadow:none;margin-bottom:16px">
+        <h3>Offer Letter ${af.offerLetter.status === "Issued" ? `<span class="badge converted">Issued — ${esc(af.offerLetter.type)}</span>` : `<span class="badge closed">Not Issued</span>`}</h3>
+        ${af.offerLetter.status === "Issued" ? `<p class="small-muted">Issued ${fmtDateTime(af.offerLetter.issuedAt)}</p>` : `
+          <div class="field" style="max-width:280px"><label>Offer Type</label><select id="af_offerType">${OFFER_TYPES.map(t => `<option>${t}</option>`).join("")}</select></div>
+          <button class="btn sm" onclick="issueOfferLetter()">${icon("cap")} Issue Offer Letter</button>`}
+      </div>
+
+      <div class="card" style="box-shadow:none;margin-bottom:16px">
+        <h3>Payment Plan / Financial Documents ${af.paymentPlan.status === "Sent" ? `<span class="badge converted">Sent</span>` : `<span class="badge closed">Not Sent</span>`}</h3>
+        <div id="paymentPlanRows">
+          ${(af.paymentPlan.installments.length ? af.paymentPlan.installments : [{ label: "Registration Fee", amount: 25000, dueDate: todayStr() }]).map((row, i) => `
+            <div class="grid-2" data-row="${i}">
+              <div class="field"><label>Installment</label><input class="pp_label" value="${esc(row.label)}"></div>
+              <div class="field"><label>Amount (LKR)</label><input class="pp_amount" type="number" min="0" value="${row.amount}"></div>
+            </div>`).join("")}
+        </div>
+        ${af.paymentPlan.status === "Sent" ? `<p class="small-muted">Sent ${fmtDateTime(af.paymentPlan.sentAt)}</p>` : `<button class="btn sm secondary" onclick="addPaymentPlanRow()">+ Add Installment</button> <button class="btn sm" onclick="sendPaymentPlan()">${icon("card")} Send Payment Plan</button>`}
+      </div>`);
+  }
+
+  if (af.paymentPlan.status === "Sent") {
+    const pc = af.paymentConfirmed, pa = af.pushedToAdmin, sms = af.smsTransfer;
+    sections.push(`
+      <div class="card" style="box-shadow:none;margin-bottom:16px">
+        <h3>Student Payment &amp; Registration Hand-off</h3>
+        <div class="checklist-item"><span class="badge ${pc.status === "Confirmed" ? "converted" : "closed"}">${pc.status === "Confirmed" ? icon("check") : ""}</span>
+          <div style="flex:1">Payment Confirmed${pc.status === "Confirmed" ? ` — by ${esc(pc.confirmedBy)} on ${fmtDateTime(pc.confirmedAt)}` : ""}</div>
+          ${pc.status !== "Confirmed" ? `<button class="btn sm secondary" onclick="confirmPaymentReceived()">Confirm Payment Received</button>` : ""}
+        </div>
+        <div class="checklist-item"><span class="badge ${pa.status === "Pushed" ? "converted" : "closed"}">${pa.status === "Pushed" ? icon("check") : ""}</span>
+          <div style="flex:1">Pushed to Admin Staff${pa.status === "Pushed" ? ` — by ${esc(pa.pushedBy)} on ${fmtDateTime(pa.pushedAt)}` : ""}</div>
+          ${pc.status === "Confirmed" && pa.status !== "Pushed" ? `<button class="btn sm secondary" onclick="pushToAdminStaff()">Push to Admin Staff →</button>` : ""}
+        </div>
+        <div class="checklist-item"><span class="badge ${sms.status === "Transferred" ? "converted" : "closed"}">${sms.status === "Transferred" ? icon("check") : ""}</span>
+          <div style="flex:1">Transferred to Student Management System${sms.status === "Transferred" ? ` — by ${esc(sms.transferredBy)} on ${fmtDateTime(sms.transferredAt)}` : ""}</div>
+          ${pa.status === "Pushed" && sms.status !== "Transferred" && ["Academic Admin", "Admin"].includes(role) ? `<button class="btn sm" onclick="transferToSMS()">${icon("cap")} Transfer to SMS</button>` : ""}
+        </div>
+      </div>`);
+  }
+
+  return `<p class="small-muted">Application form status is visible here on the lead record. Sending, review, offer release, discount approval, offer/payment-plan dispatch and registration hand-off are simulated the same way conversion emails are elsewhere in this demo — no real mail server (see README "Demo limitations").</p>` + sections.join("");
+}
+function bindApplicationTabHandlers(L) { /* all controls here use inline onclick — nothing to bind */ }
+
+/* ============================================================
+   APPLY ONLINE — the student-facing Application Form (UCL theme)
+   Reachable directly (no counsellor assignment implied) to simulate a visitor filling it in on
+   the website, or opened pre-filled from an existing lead's Application tab. Reuses the same
+   field ids, syncFieldsFromDOM() and grade-row helpers as the internal lead editor so the
+   Educational Qualification section (University → Program → qualification) behaves identically.
+   ============================================================ */
+function renderApplyOnline(root) {
+  const params = new URLSearchParams(location.hash.split("?")[1] || "");
+  const leadId = params.get("lead");
+  const existing = leadId ? DB.leads.find(l => l.id === leadId) : null;
+
+  window.__applyForm = existing ? JSON.parse(JSON.stringify(existing)) : {
+    id: null, name: "", mobile: "", email: "", leadSource: "Website", modeOfContact: "Website Form",
+    digitalSubSource: "", studentId: "", staffName: "", schoolOrCompany: "", detailedStatus: "",
+    university: "", program: "", country: "Sri Lanka", district: "", districtOther: "",
+    previousSchool: "", priorQualificationType: "", bachelorsDegree: "", bachelorsUniversity: "",
+    examType: "Local A/L", resultsPending: true, olSubjects: [], alSubjects: [], olResult: "", alResult: "",
+    languageTest: "None", languageScore: "",
+    stage: "Open", deactivated: false, deactivationReason: "", lossReason: "",
+    assignedTo: "", intakeId: (currentAndNextIntakes()[0] || {}).id || "",
+    domain: picklist('domains')[0], isReferral: false, referralType: "", agentId: "",
+    checklist: makeChecklist(false), commissionStatus: "Pending", tuitionFee: 850000, amountPaid: 0, outstandingBalance: 0,
+    nextFollowUp: "", followUpLog: [], escalated: false,
+    applicationForm: defaultApplicationForm(), websiteLead: true, tasks: [],
+    createdAt: new Date().toISOString(), activity: []
+  };
+  window.__editingLead = window.__applyForm; // reuse grade-row + syncFieldsFromDOM helpers
+  window.__gradeRowRerender = () => renderApplyFormBody();
+  renderApplyFormBody();
+}
+
+function applyQualificationFieldsHTML(L, pType) {
+  if (pType === "Master's") {
+    return `
+      <div class="grid-2">
+        <div class="field"><label class="required">Bachelor's Degree</label><input id="f_bachelorsDegree" value="${esc(L.bachelorsDegree || "")}" placeholder="e.g. BSc Computing"></div>
+        <div class="field"><label class="required">Bachelor's University</label><select id="f_bachelorsUniversity"><option value="">-- Select --</option>${picklist('universities').map(u => `<option ${L.bachelorsUniversity === u ? "selected" : ""}>${u}</option>`).join("")}</select></div>
+      </div>`;
+  }
+  if (pType === "Foundation") {
+    return `
+      <div class="grid-2">
+        <div class="field"><label class="required">Previous School</label><input id="f_previousSchool" value="${esc(L.previousSchool || "")}"></div>
+        <div class="field"><label class="required">Qualification</label><select id="f_priorQualificationType"><option value="">-- Select --</option><option ${L.priorQualificationType === "O/L" ? "selected" : ""}>O/L</option><option ${L.priorQualificationType === "A/L" ? "selected" : ""}>A/L</option></select></div>
+      </div>
+      <div id="foundationGradeWrap">${L.priorQualificationType ? gradeTableHTML(L.priorQualificationType === "O/L" ? "ol" : "al", L) : "<p class='small-muted'>Select a qualification above to record grades (optional).</p>"}</div>`;
+  }
+  return `
+    <div class="field" style="max-width:280px"><label>Exam Type</label><select id="f_examType"><option ${L.examType === "Local A/L" ? "selected" : ""}>Local A/L</option><option ${L.examType === "London A/L" ? "selected" : ""}>London A/L</option></select></div>
+    ${gradeTableHTML("ol", L)}
+    ${gradeTableHTML("al", L)}`;
+}
+
+function renderApplyFormBody() {
+  const root = document.getElementById("content");
+  const L = window.__applyForm;
+  const pType = programType(L.program);
+  root.innerHTML = `
+    <div class="ucl-theme">
+      <div class="ucl-hero">
+        <div class="ucl-brand">UniConnect CRM · UCL Application Portal</div>
+        <h1>${L.id ? "Continue Your Application" : "New Student Application"}</h1>
+        <p>${L.id ? "Review and complete your application details below." : "Apply directly online — no counsellor needed to get started."}</p>
+      </div>
+      <div class="ucl-body">
+        <div class="ucl-card">
+          <h3>${icon("user")} Personal Information</h3>
+          <div class="grid-2">
+            <div class="field"><label class="required">Full Name</label><input id="f_name" value="${esc(L.name)}"></div>
+            <div class="field"><label class="required">Mobile</label><input id="f_mobile" value="${esc(L.mobile)}"></div>
+            <div class="field"><label>Email</label><input id="f_email" value="${esc(L.email)}"></div>
+            <div class="field"><label>Country</label><select id="f_country">${picklist('countries').map(c => `<option ${L.country === c ? "selected" : ""}>${c}</option>`).join("")}</select></div>
+            <div class="field ${L.country === "Sri Lanka" ? "" : "hidden"}" id="wrap_district"><label>District</label><select id="f_district">${picklist('districts').map(d => `<option ${L.district === d ? "selected" : ""}>${d}</option>`).join("")}</select></div>
+            <div class="field ${L.country === "Sri Lanka" && L.district === "Other" ? "" : "hidden"}" id="wrap_districtOther"><label>Specify District</label><input id="f_districtOther" value="${esc(L.districtOther || "")}"></div>
+          </div>
+        </div>
+
+        <div class="ucl-card">
+          <h3>${icon("cap")} Educational Qualification</h3>
+          <p class="small-muted">Select a university to see the programs it offers.</p>
+          <div class="grid-2">
+            <div class="field"><label class="required">University</label><select id="f_university"><option value="">-- Select --</option>${picklist('universities').map(u => `<option ${L.university === u ? "selected" : ""}>${u}</option>`).join("")}</select></div>
+            <div class="field"><label class="required">Program</label><select id="f_program" ${L.university ? "" : "disabled"}><option value="">${L.university ? "-- Select --" : "Select a university first"}</option>${(L.university ? programsForUniversity(L.university) : []).map(p => `<option ${L.program === p ? "selected" : ""}>${p}</option>`).join("")}</select></div>
+          </div>
+          ${L.program ? `<div class="notice info">Required qualification for this program: <b>${pType === "Foundation" ? "O/L or A/L" : pType === "Master's" ? "Bachelor's Degree" : "O/L and A/L"}</b></div>` : ""}
+          ${L.program ? applyQualificationFieldsHTML(L, pType) : ""}
+        </div>
+
+        <div class="ucl-card">
+          <h3>${icon("calendar")} Intake</h3>
+          <div class="field"><label class="required">Intake Cycle <span class="ucl-badge-gold">Current &amp; Next Intake only</span></label>
+            <select id="f_intake"><option value="">-- Select --</option>${currentAndNextIntakes().map(i => `<option value="${i.id}" ${L.intakeId === i.id ? "selected" : ""}>${i.name}</option>`).join("")}</select>
+          </div>
+        </div>
+
+        <div style="text-align:right">
+          <button class="btn" onclick="submitApplicationForm()">Submit Application →</button>
+        </div>
+      </div>
+    </div>
+  `;
+  bindApplyFormHandlers();
+}
+
+function bindApplyFormHandlers() {
+  const L = window.__applyForm;
+  const get = id => document.getElementById(id);
+  // Every handler syncs all fields from the DOM first, so cascading re-renders (e.g. picking a
+  // University rebuilds the Program list) never drop text the applicant already typed elsewhere.
+  if (get("f_country")) get("f_country").onchange = () => {
+    syncFieldsFromDOM();
+    if (L.country !== "Sri Lanka") { L.district = ""; L.districtOther = ""; }
+    renderApplyFormBody();
+  };
+  if (get("f_district")) get("f_district").onchange = () => { syncFieldsFromDOM(); renderApplyFormBody(); };
+  if (get("f_university")) get("f_university").onchange = () => { syncFieldsFromDOM(); L.program = ""; renderApplyFormBody(); };
+  if (get("f_program")) get("f_program").onchange = () => { syncFieldsFromDOM(); renderApplyFormBody(); };
+  if (get("f_priorQualificationType")) get("f_priorQualificationType").onchange = () => { syncFieldsFromDOM(); renderApplyFormBody(); };
+  if (get("f_examType")) get("f_examType").onchange = () => { syncFieldsFromDOM(); L.alSubjects = []; L.alResult = ""; renderApplyFormBody(); };
+  bindGradeRowHandlers();
+}
+
+function submitApplicationForm() {
+  syncFieldsFromDOM();
+  const L = window.__applyForm;
+  if (!L.name || !L.mobile) { toast("Full name and mobile are required.", "error"); return; }
+  if (!L.university || !L.program) { toast("Please select a university and program.", "error"); return; }
+  if (!L.intakeId) { toast("Please select an intake.", "error"); return; }
+  L.olResult = summariseGrades(L.olSubjects);
+  L.alResult = summariseGrades(L.alSubjects);
+  L.applicationForm = L.applicationForm || defaultApplicationForm();
+  L.applicationForm.status = "Submitted";
+  if (!L.applicationForm.sentAt) L.applicationForm.sentAt = new Date().toISOString();
+  L.applicationForm.submittedAt = new Date().toISOString();
+
+  if (L.id) {
+    const existing = DB.leads.find(l => l.id === L.id);
+    Object.assign(existing, L);
+    addActivity(existing, "Update", "Application form submitted via Apply Online");
+    notifySubmissionRecipient(existing);
+    logAudit("UPDATE", "Lead:" + existing.id, "Application form submitted via Apply Online");
+    saveDB();
+    renderApplyThankYou(existing.id, !!existing.assignedTo);
+  } else {
+    L.id = uid("lead");
+    L.createdAt = new Date().toISOString();
+    L.checklist = makeChecklist(false);
+    L.activity = [{ ts: new Date().toISOString(), user: "System", type: "Create", text: "Application submitted directly via website — no counsellor assigned" }];
+    DB.leads.push(L);
+    notifySubmissionRecipient(L);
+    logAudit("CREATE", "Lead:" + L.id, "New website application submitted, unassigned (Website Lead)");
+    saveDB();
+    renderApplyThankYou(L.id, false);
+  }
+}
+
+function renderApplyThankYou(leadId, hasCounsellor) {
+  const root = document.getElementById("content");
+  root.innerHTML = `
+    <div class="ucl-theme">
+      <div class="ucl-hero"><div class="ucl-brand">UniConnect CRM · UCL Application Portal</div><h1>Application Submitted</h1></div>
+      <div class="ucl-body">
+        <div class="ucl-card ucl-thankyou">
+          <div class="icon">${icon("checkCircle")}</div>
+          <h2>Thank you!</h2>
+          <p class="small-muted">Your application has been received. ${hasCounsellor ? "Your counsellor" : "Our admissions team"} will be in touch shortly.</p>
+          <div style="margin-top:20px;display:flex;gap:10px;justify-content:center">
+            <button class="btn secondary" onclick="go('#/apply')">Submit Another Application</button>
+            <button class="btn secondary" onclick="openLeadModal('${leadId}')" title="Internal — view this lead in the CRM">${icon("search")} View Lead (staff)</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+/* ============================================================
+   WEBSITE LEADS — applications submitted directly through the website with no counsellor,
+   routed to Head of Marketing for review and counsellor assignment.
+   ============================================================ */
+function renderWebsiteLeads(root) {
+  const leads = visibleLeads().filter(l => l.websiteLead);
+  const unassigned = leads.filter(l => !l.assignedTo);
+  const assigned = leads.filter(l => l.assignedTo);
+  root.innerHTML = `
+    <div class="page-header"><div><h1>Website Leads</h1><div class="sub">Applications submitted directly through the website without a counsellor — Head of Marketing review &amp; assignment</div></div></div>
+    <div class="notice info">${icon("globe")} These leads bypassed counsellor assignment entirely. Assign a counsellor below to bring each one into the normal pipeline.</div>
+
+    <h3 style="margin:18px 0 8px">Awaiting Assignment <span class="pill">${unassigned.length}</span></h3>
+    ${unassigned.length ? `
+    <div class="table-wrap card">
+    <table><thead><tr><th>Name</th><th>Program</th><th>University</th><th>Submitted</th><th>Assign Counsellor</th></tr></thead>
+    <tbody>${unassigned.map(l => `
+      <tr>
+        <td><a href="javascript:void(0)" onclick="openLeadModal('${l.id}')"><b>${esc(l.name)}</b></a><div class="small-muted">${esc(l.mobile)}</div></td>
+        <td>${esc(l.program) || "—"}</td>
+        <td>${esc(l.university) || "—"}</td>
+        <td>${fmtDateTime(l.applicationForm.submittedAt || l.createdAt)}</td>
+        <td>
+          <div style="display:flex;gap:8px;align-items:center;white-space:nowrap">
+            <select class="wlCounsellorSel" data-id="${l.id}" style="width:180px"><option value="">-- Select --</option>${DB.users.filter(u => u.role === "Counsellor").map(u => `<option value="${u.id}">${esc(u.name)}</option>`).join("")}</select>
+            <button class="btn sm" onclick="assignCounsellorToWebsiteLead('${l.id}')">Assign</button>
+          </div>
+        </td>
+      </tr>`).join("")}</tbody></table>
+    </div>` : `<div class="empty-state">No website leads awaiting assignment.</div>`}
+
+    <h3 style="margin:24px 0 8px">Already Assigned <span class="pill">${assigned.length}</span></h3>
+    ${assigned.length ? `
+    <div class="table-wrap card">
+    <table><thead><tr><th>Name</th><th>Program</th><th>Assigned Counsellor</th><th>Stage</th><th></th></tr></thead>
+    <tbody>${assigned.map(l => `
+      <tr>
+        <td><b>${esc(l.name)}</b></td>
+        <td>${esc(l.program) || "—"}</td>
+        <td>${esc(userName(l.assignedTo))}</td>
+        <td>${stageBadge(l.stage)}</td>
+        <td><button class="btn sm ghost" onclick="openLeadModal('${l.id}')">Open</button></td>
+      </tr>`).join("")}</tbody></table>
+    </div>` : `<div class="empty-state">No assigned website leads yet.</div>`}
+  `;
+}
+function assignCounsellorToWebsiteLead(leadId) {
+  const sel = document.querySelector(`.wlCounsellorSel[data-id="${leadId}"]`);
+  const counsellorId = sel ? sel.value : "";
+  if (!counsellorId) { toast("Select a counsellor first.", "warn"); return; }
+  const lead = DB.leads.find(l => l.id === leadId);
+  lead.assignedTo = counsellorId;
+  addActivity(lead, "Assignment", `Assigned to counsellor ${userName(counsellorId)} by ${getCurrentUser().name} (Website Leads)`);
+  notify(counsellorId, lead.id, `New website application assigned to you — ${lead.name}`, "New Assignment");
+  logAudit("ASSIGN", "Lead:" + lead.id, `Website lead assigned to ${userName(counsellorId)}`);
+  saveDB();
+  toast(`Assigned to ${userName(counsellorId)}.`, "success");
+  renderWebsiteLeads(document.getElementById("content"));
 }
 
 /* ---------------- Follow-Up Notes & Task Management (per pipeline stage) ---------------- */
@@ -1242,15 +1914,28 @@ function removeStageTask(id) {
   renderLeadModalTab();
 }
 
+// Commits the exam-type switch the inline UC57 - AF1 notice warned about.
+function confirmExamTypeChange(newVal) {
+  const L = window.__editingLead;
+  L.alSubjects = [];
+  L.alResult = "";
+  L.examType = newVal;
+  renderLeadModalTab();
+  toast(`Exam type set to ${newVal} — A/L grades cleared.`, "warn");
+}
+
+// Shared by the lead modal's Academic tab AND the Apply Online form (Educational Qualification) —
+// window.__gradeRowRerender lets whichever page is currently editing window.__editingLead redraw
+// itself; it defaults to the lead modal's own tab renderer.
 function addGradeRow(kind) {
   syncFieldsFromDOM();
   gradeRows(window.__editingLead, kind).push({ subject: "", grade: "" });
-  renderLeadModalTab();
+  (window.__gradeRowRerender || renderLeadModalTab)();
 }
 function removeGradeRow(kind, idx) {
   syncFieldsFromDOM();
   gradeRows(window.__editingLead, kind).splice(idx, 1);
-  renderLeadModalTab();
+  (window.__gradeRowRerender || renderLeadModalTab)();
 }
 
 function syncFieldsFromDOM() {
@@ -1358,11 +2043,15 @@ function saveLeadModal() {
   const dup = checkDuplicate(L);
   if (dup && !L.__dupConfirmed) {
     document.getElementById("leadValidationNotice").innerHTML = `
-      <div class="notice error">⚠️ Possible duplicate lead detected (UC60): <b>${esc(dup.name)}</b> (${esc(dup.mobile)}).
+      <div class="notice error">${icon("warn")} Possible duplicate lead detected (UC60): <b>${esc(dup.name)}</b> (${esc(dup.mobile)}).
       <div style="margin-top:8px"><button class="btn sm danger" onclick="window.__editingLead.__dupConfirmed=true;saveLeadModal();">Create Anyway</button>
       <button class="btn sm secondary" onclick="closeModal()">Abort</button></div></div>`;
     return;
   }
+
+  // Transient UI flag — must not be persisted onto the record, or the lead carries it
+  // forever and its duplicate check is permanently suppressed.
+  delete L.__dupConfirmed;
 
   if (!L.id) {
     L.id = uid("lead");
@@ -1385,27 +2074,32 @@ function saveLeadModal() {
   router();
 }
 
+// The single stage-transition rulebook, shared by the lead modal's "Move to X" buttons
+// and by Kanban drag-and-drop. Returns null when the move is allowed, otherwise the
+// message to show. Previously the Kanban path re-implemented only three of these four
+// gates and silently skipped the UC54 checklist rule the modal enforced.
+// Check order is significant — it determines which message the user sees first.
+function stageChangeBlockReason(lead, newStage) {
+  if (!allowedNextStages(lead.stage).includes(newStage)) {
+    return `Blocked: ${stageLabel(lead.stage)} → ${stageLabel(newStage)} is not a permitted transition (UC37/UC38).`;
+  }
+  const { ok, missing } = isMandatoryMet(lead, newStage);
+  if (!ok) return `Blocked (UC59): missing ${missing.join(", ")}`;
+  if (newStage === "Converted" && lead.resultsPending) {
+    return "Blocked: results pending, cannot move to Converted (UC56).";
+  }
+  const incompleteChecklist = (lead.checklist || []).some(i => !i.done);
+  if (lead.stage === "Open" && newStage === "Qualified" && incompleteChecklist) {
+    return "Blocked (UC54): complete the qualification checklist first.";
+  }
+  return null;
+}
+
 function attemptStageChange(newStage) {
   syncFieldsFromDOM();
   const L = window.__editingLead;
-  if (!allowedNextStages(L.stage).includes(newStage)) {
-    toast(`Blocked: ${L.stage} → ${newStage} is not a permitted transition (UC37/UC38).`, "error");
-    return;
-  }
-  const { ok, missing } = isMandatoryMet(L, newStage);
-  if (!ok) {
-    toast(`Blocked (UC59): missing ${missing.join(", ")}`, "error");
-    return;
-  }
-  if (newStage === "Converted" && L.resultsPending) {
-    toast("Blocked: results pending, cannot move to Converted (UC56).", "error");
-    return;
-  }
-  const incompleteChecklist = (L.checklist || []).some(i => !i.done);
-  if (newStage !== "Closed" && L.stage === "Open" && newStage === "Qualified" && incompleteChecklist) {
-    toast("Blocked (UC54): complete the qualification checklist first.", "error");
-    return;
-  }
+  const blocked = stageChangeBlockReason(L, newStage);
+  if (blocked) { toast(blocked, "error"); return; }
   const fromStage = L.stage;
   L.stage = newStage;
   addActivity(L, "Stage Change", `Moved from ${stageLabel(fromStage)} to ${stageLabel(newStage)}`);
@@ -1425,7 +2119,7 @@ function attemptStageChange(newStage) {
    AF1 (UC36): if no handbook exists for the program, send anyway and log a warning. */
 function runConversionAutomation(lead) {
   if (!lead.email) {
-    addActivity(lead, "Automation", "⚠ Conversion email NOT sent — no email address on file (UC35 - AF1). Counsellor alerted to send manually.");
+    addActivity(lead, "Automation", "Warning: conversion email NOT sent — no email address on file (UC35 - AF1). Counsellor alerted to send manually.");
     toast("Conversion email failed: no email address on file (UC35 - AF1).", "warn");
     logAudit("EMAIL_FAILED", "Lead:" + lead.id, "No email address");
     return;
@@ -1436,13 +2130,14 @@ function runConversionAutomation(lead) {
     toast(`Confirmation email sent to ${lead.email} with ${handbook} attached.`, "success");
     logAudit("EMAIL_SENT", "Lead:" + lead.id, `Conversion email + handbook ${handbook}`);
   } else {
-    addActivity(lead, "Automation", `Confirmation email sent to ${lead.email} (UC35) — ⚠ no handbook on file for "${lead.program || "unset program"}", sent without attachment (UC36 - AF1)`);
+    addActivity(lead, "Automation", `Confirmation email sent to ${lead.email} (UC35) — ${icon("warn")} no handbook on file for "${lead.program || "unset program"}", sent without attachment (UC36 - AF1)`);
     toast(`Email sent — no handbook found for ${lead.program || "this program"} (UC36 - AF1).`, "warn");
     logAudit("EMAIL_SENT", "Lead:" + lead.id, `Conversion email sent WITHOUT handbook (none configured for ${lead.program})`);
   }
 }
 
 function attemptDeactivate() {
+  syncFieldsFromDOM(); // preserve in-progress edits across the modal swap
   const L = window.__editingLead;
   const minDays = DB.deactivationMinDays || 3;
   const canOverride = ["Manager", "Admin", "Head of Marketing", "CEO"].includes(currentRole());
@@ -1450,9 +2145,39 @@ function attemptDeactivate() {
     toast(`Blocked (UC41): lead must be at least ${minDays} day(s) old before deactivation. Ask a Manager to override.`, "error");
     return;
   }
-  const reason = prompt("Deactivation reason (UC39/UC41):");
-  if (!reason) { toast("Deactivation cancelled — reason required.", "warn"); return; }
-  if (daysAgo(L.createdAt) < minDays && canOverride) {
+  renderDeactivateReasonModal();
+}
+
+// Replaces the lead modal in #modalRoot rather than stacking on top of it (openModal
+// only supports one). window.__editingLead is untouched, so "Back" re-renders the lead
+// modal with every in-progress edit intact.
+function renderDeactivateReasonModal() {
+  const L = window.__editingLead;
+  const minDays = DB.deactivationMinDays || 3;
+  const isOverride = daysAgo(L.createdAt) < minDays;
+  openModal(`
+    <div class="modal-header"><h2>Deactivate ${esc(L.name)}</h2>
+      <button class="close-x" onclick="closeModal()">&times;</button></div>
+    <div class="modal-body">
+      ${isOverride ? `<div class="notice">${icon("warn")} This lead is only ${daysAgo(L.createdAt)} day(s) old — below the ${minDays}-day minimum. Deactivating records a manager override (UC41 - AF1).</div>` : ""}
+      <p class="small-muted">The lead moves to Closed and drops out of the active pipeline. Record why, for the audit log (UC39/UC41).</p>
+      <div class="field"><label class="required">Deactivation reason</label>
+        <input id="deact_reason" placeholder="e.g. Unreachable after 6 attempts"
+          oninput="document.getElementById('deactGo').disabled = !this.value.trim()"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn secondary" onclick="renderLeadModal()">← Back</button>
+      <button class="btn danger" id="deactGo" disabled onclick="confirmDeactivate()">Deactivate Lead</button>
+    </div>
+  `, { width: 560 });
+}
+
+function confirmDeactivate() {
+  const L = window.__editingLead;
+  const reason = document.getElementById("deact_reason").value.trim();
+  if (!reason) return;
+  const minDays = DB.deactivationMinDays || 3;
+  if (daysAgo(L.createdAt) < minDays) {
     addActivity(L, "Override", `Manager override of deactivation criteria (UC41 AF1) — lead only ${daysAgo(L.createdAt)}d old`);
   }
   L.deactivated = true;
@@ -1503,31 +2228,65 @@ function renderKanbanBoard() {
 
   board.innerHTML = stages().map(stage => {
     const stageLeads = leads.filter(l => l.stage === stage);
-    return `<div class="kanban-col" data-stage="${stage}" ondragover="event.preventDefault();this.classList.add('dragover')" ondragleave="this.classList.remove('dragover')" ondrop="handleKanbanDrop(event,'${stage}')">
+    return `<div class="kanban-col" data-stage="${stage}" ondragover="kanbanDragOver(event,'${stage}')" ondragleave="kanbanDragLeave(event)" ondrop="handleKanbanDrop(event,'${stage}')">
       <h4>${esc(stageLabel(stage))} <span>${stageLeads.length}</span></h4>
+      <div class="kanban-col-blocked-hint">Not a permitted move</div>
       ${stageLeads.map(l => `
-        <div class="kanban-card" draggable="true" ondragstart="event.dataTransfer.setData('text/plain','${l.id}')" onclick="openLeadModal('${l.id}')">
+        <div class="kanban-card" draggable="true" ondragstart="kanbanDragStart(event,'${l.id}')" ondragend="kanbanDragEnd()" onclick="openLeadModal('${l.id}')">
           <div class="name">${esc(l.name)}</div>
           <div class="meta">${esc(l.program) || "No program"} · ${esc(userName(l.assignedTo))}</div>
         </div>`).join("") || `<div class="small-muted" style="padding:10px 0">No leads</div>`}
     </div>`;
   }).join("");
 }
+
+/* Drag lifecycle. Two problems this solves:
+   1. Flicker — dragleave used to fire whenever the pointer crossed onto a child card,
+      so the drop highlight strobed while dragging across a valid column. Marking the
+      board `.dragging` makes cards pointer-events:none, leaving the column as the only
+      hit-test target.
+   2. No pre-drop feedback — every column highlighted as droppable even when the move
+      would be rejected. dataTransfer is unreadable during dragover, so the dragged id
+      is stashed on window to evaluate the same rulebook the drop will apply. */
+function kanbanDragStart(ev, leadId) {
+  window.__kanbanDragId = leadId;
+  ev.dataTransfer.setData("text/plain", leadId);
+  ev.dataTransfer.effectAllowed = "move";
+  const board = document.getElementById("kanbanBoard");
+  if (board) board.classList.add("dragging");
+  ev.currentTarget.classList.add("dragging-card");
+}
+function kanbanDragOver(ev, stage) {
+  ev.preventDefault();
+  const lead = visibleLeads().find(l => l.id === window.__kanbanDragId);
+  const blocked = lead && lead.stage !== stage && stageChangeBlockReason(lead, stage);
+  ev.dataTransfer.dropEffect = blocked ? "none" : "move";
+  ev.currentTarget.classList.toggle("dragover", !blocked);
+  ev.currentTarget.classList.toggle("dragover-blocked", !!blocked);
+}
+function kanbanDragLeave(ev) {
+  ev.currentTarget.classList.remove("dragover", "dragover-blocked");
+}
+// Also runs on a cancelled drag (Esc / released outside a column), which previously
+// left the last-hovered column stuck in its highlighted state.
+function kanbanDragEnd() {
+  window.__kanbanDragId = null;
+  const board = document.getElementById("kanbanBoard");
+  if (board) board.classList.remove("dragging");
+  document.querySelectorAll(".kanban-card.dragging-card").forEach(c => c.classList.remove("dragging-card"));
+  document.querySelectorAll(".kanban-col").forEach(c => c.classList.remove("dragover", "dragover-blocked"));
+}
 function handleKanbanDrop(ev, targetStage) {
   ev.preventDefault();
-  ev.currentTarget.classList.remove("dragover");
+  kanbanDragEnd();
   const id = ev.dataTransfer.getData("text/plain");
-  const lead = DB.leads.find(l => l.id === id);
+  // visibleLeads(), not DB.leads — a lead outside this role's row-level scope must not
+  // be movable even if its id somehow reaches the drop handler.
+  const lead = visibleLeads().find(l => l.id === id);
   if (!lead) return;
   if (lead.stage === targetStage) return;
-  const allowed = allowedNextStages(lead.stage);
-  if (!allowed.includes(targetStage)) {
-    toast(`Blocked: ${lead.stage} → ${targetStage} is not a permitted transition (UC37/UC38).`, "error");
-    return;
-  }
-  const { ok, missing } = isMandatoryMet(lead, targetStage);
-  if (!ok) { toast(`Blocked (UC59): missing ${missing.join(", ")}`, "error"); return; }
-  if (targetStage === "Converted" && lead.resultsPending) { toast("Blocked: results pending (UC56).", "error"); return; }
+  const blocked = stageChangeBlockReason(lead, targetStage);
+  if (blocked) { toast(blocked, "error"); return; }
   const fromStage = lead.stage;
   lead.stage = targetStage;
   addActivity(lead, "Stage Change", `Moved from ${stageLabel(fromStage)} to ${stageLabel(targetStage)} via Kanban drag-and-drop`);
@@ -1561,9 +2320,9 @@ function renderFollowups(root) {
     <div class="page-header"><div><h1>Follow-Up Tracker</h1><div class="sub">Centralised list of pending tasks (UC31/UC65)</div></div></div>
 
     <div class="card" style="border-left:3px solid var(--amber);">
-      <h3>🔔 Stage Notes &amp; Task Reminders <span class="pill">per-stage notes/tasks</span></h3>
+      <h3>${icon("bell")} Stage Notes &amp; Task Reminders <span class="pill">per-stage notes/tasks</span></h3>
       ${openTasks.length ? `
-        <table><thead><tr><th>Lead</th><th>Stage</th><th>Note / Task</th><th>Due</th><th>Status</th><th></th></tr></thead>
+        <div class="table-wrap wide"><table><thead><tr><th>Lead</th><th>Stage</th><th>Note / Task</th><th>Due</th><th>Status</th><th></th></tr></thead>
         <tbody>${openTasks.map(({ lead, task }) => `
           <tr>
             <td><b>${esc(lead.name)}</b></td>
@@ -1572,14 +2331,14 @@ function renderFollowups(root) {
             <td>${fmtDateTime(task.dueAt)}</td>
             <td>${taskStatusPill(task)}</td>
             <td><button class="btn sm ghost" onclick="openLeadModal('${lead.id}')">Open</button></td>
-          </tr>`).join("")}</tbody></table>
+          </tr>`).join("")}</tbody></table></div>
       ` : `<div class="empty-state">No pending stage tasks with a reminder date.</div>`}
     </div>
 
     <div class="card" style="border-left:3px solid var(--red);">
-      <h3>⚠ Escalations <span class="pill">UC32 / UC33 / UC34</span></h3>
+      <h3>${icon("warn")} Escalations <span class="pill">UC32 / UC33 / UC34</span></h3>
       ${escalations.length ? `
-        <table><thead><tr><th>Lead</th><th>Assigned To</th><th>Reason</th><th>Escalation Chain</th><th></th></tr></thead>
+        <div class="table-wrap wide"><table><thead><tr><th>Lead</th><th>Assigned To</th><th>Reason</th><th>Escalation Chain</th><th></th></tr></thead>
         <tbody>${escalations.map(l => {
           const owner = DB.users.find(u => u.id === l.assignedTo);
           const manager = owner ? DB.users.find(u => u.id === owner.managerId) : null;
@@ -1593,8 +2352,8 @@ function renderFollowups(root) {
               ? `<span class="badge closed">Escalated to Head of Dept.</span>`
               : `<button class="btn sm danger" onclick="escalateLead('${l.id}')">Escalate Now</button>`}</td>
           </tr>`;
-        }).join("")}</tbody></table>
-      ` : `<div class="empty-state">No SLA breaches right now — everything is on track. 🎉</div>`}
+        }).join("")}</tbody></table></div>
+      ` : `<div class="empty-state">No SLA breaches right now — everything is on track.</div>`}
     </div>
 
     <div class="chip-row">
@@ -1614,7 +2373,7 @@ function renderFollowups(root) {
           <td>${fmtDate(t.lead.nextFollowUp)}<div class="small-muted">${t.dueDays < 0 ? Math.abs(t.dueDays) + "d overdue" : t.dueDays === 0 ? "due today" : "in " + t.dueDays + "d"}</div></td>
           <td><span class="badge ${t.status === "Overdue" ? "closed" : t.status === "Today" ? "qualified" : "open"}">${t.status}</span></td>
           <td style="white-space:nowrap"><button class="btn sm secondary" onclick="quickFollowUp('${t.lead.id}')">Complete</button> <button class="btn sm ghost" onclick="openRescheduleModal('${t.lead.id}')" title="UC31 - AF1">Reschedule</button></td>
-        </tr>`).join("") || `<tr><td colspan="6" class="empty-state">No pending follow-ups 🎉</td></tr>`}
+        </tr>`).join("") || `<tr><td colspan="6" class="empty-state">No pending follow-ups.</td></tr>`}
     </tbody></table>
     </div>
   `;
@@ -1821,8 +2580,8 @@ function renderCommissionBody() {
             <td>${esc(l.name)}</td><td>${esc(l.university) || "-"}</td>
             <td>${daysAgo(l.createdAt)}d</td>
             ${showAmounts ? `<td>${money(l.amountPaid)}</td><td>${l.outstandingBalance ? `<span style="color:var(--red)">${money(l.outstandingBalance)}</span>` : money(0)}</td>` : ""}
-            <td>${meetsPaymentThreshold(l) ? "✅" : "❌"}</td>
-            <td>${outstandingCleared(l) ? "✅" : "❌"}</td>
+            <td>${meetsPaymentThreshold(l) ? `<span style="color:var(--green)">${icon("check")}</span>` : `<span style="color:var(--red)">${icon("x")}</span>`}</td>
+            <td>${outstandingCleared(l) ? `<span style="color:var(--green)">${icon("check")}</span>` : `<span style="color:var(--red)">${icon("x")}</span>`}</td>
             <td>${commissionBadge(l.commissionStatus)}</td>
             ${showAmounts ? `<td>${money(estimateCommission(l))}</td>` : ""}
             <td>${renderCommissionActionBtn(l)}</td>
@@ -1884,8 +2643,8 @@ function renderReportCard(r) {
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
         ${r.status === "Marketing Review" && ["Head of Marketing", "Admin"].includes(role) ? `<button class="btn sm success" onclick="approveReport('${r.id}')">Approve (UC8)</button><button class="btn sm danger" onclick="rejectReport('${r.id}')">Reject</button>` : ""}
         ${r.status === "Dispatched" && ["Finance", "Admin"].includes(role) ? `<button class="btn sm" onclick="processUnifiedPayment('${r.id}')">Process Unified Payment (UC18)</button>` : ""}
-        <button class="btn sm secondary" onclick="exportReportCSV('${r.id}')">⬇ CSV</button>
-        <button class="btn sm secondary" onclick="exportCommissionReportPDF('${r.id}')">📄 PDF</button>
+        <button class="btn sm secondary" onclick="exportReportCSV('${r.id}')">${icon("download")} CSV</button>
+        <button class="btn sm secondary" onclick="exportCommissionReportPDF('${r.id}')">${icon("document")} PDF</button>
       </div>
     </div>
     ${r.comments ? `<div class="notice error" style="margin-top:10px">Reviewer comment: ${esc(r.comments)}</div>` : ""}
@@ -1936,15 +2695,23 @@ function approveReport(id) {
   renderCommissionBody();
 }
 function rejectReport(id) {
-  const comment = prompt("Rejection reason (required, UC7 - AF1):");
-  if (!comment) { toast("Rejection cancelled — a comment is required.", "warn"); return; }
-  const r = DB.reports.find(x => x.id === id);
-  r.status = "Draft";
-  r.comments = comment;
-  logAudit("REJECT_REPORT", "CommissionReport:" + id, comment);
-  saveDB();
-  toast("Report sent back for correction.", "warn");
-  renderCommissionBody();
+  confirmModal({
+    title: "Send report back for correction",
+    message: "The report returns to Draft so the figures can be corrected and resubmitted. Tell the preparer what needs changing (UC7 - AF1).",
+    reasonLabel: "Rejection reason",
+    placeholder: "e.g. Cardiff Met commission rate looks wrong",
+    requireReason: true,
+    confirmLabel: "Send Back",
+    onConfirm: (comment) => {
+      const r = DB.reports.find(x => x.id === id);
+      r.status = "Draft";
+      r.comments = comment;
+      logAudit("REJECT_REPORT", "CommissionReport:" + id, comment);
+      saveDB();
+      toast("Report sent back for correction.", "warn");
+      renderCommissionBody();
+    }
+  });
 }
 function processUnifiedPayment(id) {
   const r = DB.reports.find(x => x.id === id);
@@ -2241,15 +3008,15 @@ function renderReports(root) {
   const tabs = REPORT_DEFS.filter(r => canViewReport(r.id)).map(r => [r.id, r.label]);
   if (!tabs.length) {
     root.innerHTML = `<div class="page-header"><div><h1>Reports & Analytics</h1></div></div>
-      <div class="empty-state">No reports are enabled for the ${esc(currentRole())} role (UC49).</div>`;
+      <div class="empty-state">No reports are enabled for the ${esc(currentRole())} role.</div>`;
     return;
   }
   if (!tabs.some(([k]) => k === state.reportsTab)) state.reportsTab = tabs[0][0];
   root.innerHTML = `
     <div class="page-header"><div><h1>Reports & Analytics</h1><div class="sub">Module M5 — ${tabs.length} report(s) visible to ${esc(currentRole())} (UC49)</div></div>
       <div style="display:flex;gap:8px;">
-        <button class="btn secondary sm" onclick="exportCurrentReport()">⬇ CSV</button>
-        <button class="btn sm" onclick="exportCurrentReportPDF()" title="UC45 - AF1">📄 Export PDF</button>
+        <button class="btn secondary sm" onclick="exportCurrentReport()">${icon("download")} CSV</button>
+        <button class="btn sm" onclick="exportCurrentReportPDF()" title="UC45 - AF1">${icon("document")} Export PDF</button>
       </div>
     </div>
     <div class="tabs">${tabs.map(([k, l]) => `<div class="tab ${state.reportsTab === k ? "active" : ""}" data-k="${k}">${l}</div>`).join("")}</div>
@@ -2280,7 +3047,7 @@ function renderReportBody() {
               <td>${esc(l.leadSource)}</td>
               <td>${esc(l.detailedStatus) || stageBadge(l.stage)}</td>
               ${stageCols.map(s => `<td>${d[s] ? fmtDate(d[s]) : "<span class='small-muted'>—</span>"}</td>`).join("")}
-              <td>${l.stage === "Converted" && d.Converted ? fmtDate(d.Converted) : "<span class='small-muted'>—</span>"}</td>
+              <td>${smsOnboardDate(l, d) ? fmtDate(smsOnboardDate(l, d)) : "<span class='small-muted'>—</span>"}</td>
             </tr>`;
           }).join("")}</tbody>
         </table></div>` : `<div class="empty-state">No leads in your view have submitted an application form yet.</div>`}
@@ -2297,8 +3064,8 @@ function renderReportBody() {
       return { label: s, value: l.length, conv, rate: l.length ? ((conv / l.length) * 100).toFixed(0) : 0 };
     });
     body.innerHTML = `<div class="card"><h3>Lead Source Performance (UC47)</h3>${simpleBarChart(bySource)}
-      <table style="margin-top:12px"><thead><tr><th>Source</th><th>Leads</th><th>Converted</th><th>Conversion %</th></tr></thead>
-      <tbody>${bySource.map(s => `<tr><td>${s.label}</td><td>${s.value}</td><td>${s.conv}</td><td>${s.rate}%</td></tr>`).join("")}</tbody></table></div>`;
+      <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>Source</th><th>Leads</th><th>Converted</th><th>Conversion %</th></tr></thead>
+      <tbody>${bySource.map(s => `<tr><td>${s.label}</td><td>${s.value}</td><td>${s.conv}</td><td>${s.rate}%</td></tr>`).join("")}</tbody></table></div></div>`;
   }
   if (tab === "university") {
     const byUni = picklist('universities').map(u => ({ label: u, value: leads.filter(l => l.university === u).length }));
@@ -2309,16 +3076,16 @@ function renderReportBody() {
     const qualified = leads.filter(l => l.stage === "Qualified" || l.stage === "Converted").length;
     const enrolled = leads.filter(l => l.stage === "Converted").length;
     body.innerHTML = `<div class="card"><h3>Full Funnel Conversion (UC76)</h3>
-      ${simpleBarChart([{ label: "Inquiries", value: inquiries, color: "#2563eb" }, { label: "Qualified Leads", value: qualified, color: "#e0821e" }, { label: "Enrolments", value: enrolled, color: "#1c8a4c" }])}
+      ${simpleBarChart([{ label: "Inquiries", value: inquiries, color: CHART.primary }, { label: "Qualified Leads", value: qualified, color: CHART.warn }, { label: "Enrolments", value: enrolled, color: CHART.good }])}
       <p class="small-muted">Inquiry → Lead: ${inquiries ? ((qualified / inquiries) * 100).toFixed(1) : 0}% &nbsp;|&nbsp; Lead → Enrolment: ${qualified ? ((enrolled / qualified) * 100).toFixed(1) : 0}%</p>
     </div>`;
   }
   if (tab === "loss") {
     const lost = leads.filter(l => l.stage === "Closed" && l.lossReason);
-    const segs = picklist('lossReasons').map((r, idx) => ({ label: r, value: lost.filter(l => l.lossReason === r).length, color: ["#2563eb", "#e0821e", "#1c8a4c", "#d64545", "#7c3aed", "#c2185b"][idx % 6] })).filter(s => s.value > 0);
+    const segs = picklist('lossReasons').map((r, idx) => ({ label: r, value: lost.filter(l => l.lossReason === r).length, color: CHART.series[idx % CHART.series.length] })).filter(s => s.value > 0);
     body.innerHTML = `<div class="card"><h3>Loss Reason Analysis (UC77)</h3>
       <div style="display:flex;gap:24px;align-items:center;flex-wrap:wrap;">
-        ${donutSVG(segs.length ? segs : [{ label: "None", value: 1, color: "#e2e6ec" }], 180)}
+        ${donutSVG(segs.length ? segs : [{ label: "None", value: 1, color: CHART.grid }], 180)}
         <div>${segs.map(s => `<div class="legend"><span><i style="background:${s.color}"></i>${s.label}: ${s.value}</span></div>`).join("") || "<span class='small-muted'>No lost leads recorded yet.</span>"}</div>
       </div></div>`;
   }
@@ -2328,8 +3095,8 @@ function renderReportBody() {
       return { label: p, value: l.length, enrolled: l.filter(x => x.stage === "Converted").length };
     });
     body.innerHTML = `<div class="card"><h3>Program-Wise Performance (UC78)</h3>
-    <table><thead><tr><th>Program</th><th>Leads</th><th>Enrolled</th><th>Conversion %</th></tr></thead>
-    <tbody>${byProg.map(p => `<tr><td>${p.label}</td><td>${p.value}</td><td>${p.enrolled}</td><td>${p.value ? ((p.enrolled / p.value) * 100).toFixed(0) : 0}%</td></tr>`).join("")}</tbody></table></div>`;
+    <div class="table-wrap"><table><thead><tr><th>Program</th><th>Leads</th><th>Enrolled</th><th>Conversion %</th></tr></thead>
+    <tbody>${byProg.map(p => `<tr><td>${p.label}</td><td>${p.value}</td><td>${p.enrolled}</td><td>${p.value ? ((p.enrolled / p.value) * 100).toFixed(0) : 0}%</td></tr>`).join("")}</tbody></table></div></div>`;
   }
   if (tab === "sla") {
     const counsellors = DB.users.filter(u => u.role === "Counsellor");
@@ -2341,9 +3108,9 @@ function renderReportBody() {
     body.innerHTML = `<div class="card">
       <h3>Follow-Up SLA Compliance <span class="pill">UC46</span></h3>
       <p class="small-muted">% of completed follow-up tasks finished on or before their scheduled due date. Overall: <b>${overall.onTime} of ${overall.total} on time (${overall.pct}%)</b>.</p>
-      ${simpleBarChart(perCounsellor.map(r => ({ label: r.name, value: r.pct, color: r.pct >= 80 ? "#0f8a4c" : r.pct >= 60 ? "#c2740a" : "#c62b2b" })))}
-      <table style="margin-top:14px"><thead><tr><th>Counsellor</th><th>Tasks Completed</th><th>On Time</th><th>Late</th><th>Compliance</th></tr></thead>
-      <tbody>${perCounsellor.map(r => `<tr><td>${esc(r.name)}</td><td>${r.total}</td><td>${r.onTime}</td><td>${r.total - r.onTime}</td><td><b>${r.pct}%</b></td></tr>`).join("")}</tbody></table>
+      ${simpleBarChart(perCounsellor.map(r => ({ label: r.name, value: r.pct, color: r.pct >= 80 ? CHART.good : r.pct >= 60 ? CHART.warn : CHART.bad })))}
+      <div class="table-wrap wide" style="margin-top:14px"><table><thead><tr><th>Counsellor</th><th>Tasks Completed</th><th>On Time</th><th>Late</th><th>Compliance</th></tr></thead>
+      <tbody>${perCounsellor.map(r => `<tr><td>${esc(r.name)}</td><td>${r.total}</td><td>${r.onTime}</td><td>${r.total - r.onTime}</td><td><b>${r.pct}%</b></td></tr>`).join("")}</tbody></table></div>
       <p class="small-muted" style="margin-top:10px">Drill-down: late tasks are recorded on each lead's Timeline tab (UC46 - AF1).</p>
     </div>`;
   }
@@ -2353,26 +3120,26 @@ function renderReportBody() {
     body.innerHTML = `
       <div class="toolbar"><label style="margin:0">Intake:&nbsp;</label><select id="reportsIntakeSelect">${DB.intakes.map(i => `<option value="${i.id}" ${intake === i.id ? "selected" : ""}>${i.name}</option>`).join("")}</select></div>
       <div class="card"><h3>Counsellor Performance Dashboard (UC43)</h3>
-      <table><thead><tr><th>Counsellor</th><th>Target</th><th>Actual</th><th>Conversion %</th><th>Commission Eligibility</th></tr></thead>
+      <div class="table-wrap wide"><table><thead><tr><th>Counsellor</th><th>Target</th><th>Actual</th><th>Conversion %</th><th>Commission Eligibility</th></tr></thead>
       <tbody>${counsellors.map(c => {
         const t = targetFor(c.id, intake);
         const actual = actualEnrolments(c.id, intake);
         const total = DB.leads.filter(l => l.assignedTo === c.id && l.intakeId === intake).length;
         const eligible = DB.leads.filter(l => l.assignedTo === c.id && l.intakeId === intake && l.commissionStatus === "Eligible").length;
         return `<tr><td>${esc(c.name)}</td><td>${t ? t.target : "-"}</td><td>${actual}</td><td>${total ? Math.round(actual / total * 100) : 0}%</td><td>${eligible} eligible</td></tr>`;
-      }).join("")}</tbody></table></div>`;
+      }).join("")}</tbody></table></div></div>`;
     document.getElementById("reportsIntakeSelect").onchange = e => { state.reportsIntake = e.target.value; renderReportBody(); };
   }
   if (tab === "agent") {
     const agents = DB.users.filter(u => u.role === "Agent");
     body.innerHTML = `<div class="card"><h3>Agent-Generated Leads &amp; Performance (UC74)</h3>
-    <table><thead><tr><th>Agent</th><th>Leads Submitted</th><th>Converted</th><th>Conversion %</th>${canViewAmounts() ? "<th>Commission Earned</th>" : ""}</tr></thead>
+    <div class="table-wrap wide"><table><thead><tr><th>Agent</th><th>Leads Submitted</th><th>Converted</th><th>Conversion %</th>${canViewAmounts() ? "<th>Commission Earned</th>" : ""}</tr></thead>
     <tbody>${agents.map(a => {
       const l = DB.leads.filter(x => x.agentId === a.id);
       const conv = l.filter(x => x.stage === "Converted").length;
       const paid = l.filter(x => x.commissionStatus === "Paid").reduce((s, x) => s + estimateCommission(x), 0);
       return `<tr><td>${esc(a.name)}</td><td>${l.length}</td><td>${conv}</td><td>${l.length ? Math.round(conv / l.length * 100) : 0}%</td>${canViewAmounts() ? `<td>${money(paid)}</td>` : ""}</tr>`;
-    }).join("") || `<tr><td colspan="5" class="empty-state">No agents configured.</td></tr>`}</tbody></table></div>`;
+    }).join("") || `<tr><td colspan="5" class="empty-state">No agents configured.</td></tr>`}</tbody></table></div></div>`;
   }
 }
 /* Builds the real tabular data behind whichever analytics report is open.
@@ -2389,7 +3156,7 @@ function currentReportData() {
     return { title: def.label, rows: [header, ...journeyLeads.map(l => {
       const d = stageReachedDates(l);
       return [l.name, l.leadSource, l.detailedStatus || l.stage, ...stageCols.map(s => d[s] ? fmtDate(d[s]) : "—"),
-        l.stage === "Converted" && d.Converted ? fmtDate(d.Converted) : "—"];
+        smsOnboardDate(l, d) ? fmtDate(smsOnboardDate(l, d)) : "—"];
     })] };
   }
   if (tab === "status") {
@@ -2499,20 +3266,20 @@ function renderLeadSourceDashboard(root) {
     <div class="page-header">
       <div><h1>Lead Source Dashboard</h1><div class="sub">Target vs Actual lead counts by source — Head of Marketing</div></div>
       <div style="display:flex;gap:8px;">
-        <button class="btn secondary sm" onclick="exportLeadSourceDashboardCSV()">⬇ CSV</button>
-        <button class="btn sm" onclick="exportLeadSourceDashboardPDF()">📄 Export PDF</button>
+        <button class="btn secondary sm" onclick="exportLeadSourceDashboardCSV()">${icon("download")} CSV</button>
+        <button class="btn sm" onclick="exportLeadSourceDashboardPDF()">${icon("document")} Export PDF</button>
       </div>
     </div>
     <div class="card">
       <h3>Lead Source Performance</h3>
       ${simpleBarChart(rows.flatMap(r => [
-        { label: r.source + " (Target)", value: r.target, color: "#94a3b8" },
-        { label: r.source + " (Actual)", value: r.actual, color: "#2563eb" }
+        { label: r.source + " (Target)", value: r.target, color: CHART.muted },
+        { label: r.source + " (Actual)", value: r.actual, color: CHART.primary }
       ]))}
-      <table style="margin-top:14px"><thead><tr><th>Lead Source</th><th>Target</th><th>Actual</th><th>Variance</th><th>% of Target</th></tr></thead>
+      <div class="table-wrap wide" style="margin-top:14px"><table><thead><tr><th>Lead Source</th><th>Target</th><th>Actual</th><th>Variance</th><th>% of Target</th></tr></thead>
       <tbody>${rows.map(r => `<tr><td>${esc(r.source)}</td><td>${r.target}</td><td>${r.actual}</td>
         <td style="color:${r.actual - r.target >= 0 ? 'var(--green)' : 'var(--red)'}">${r.actual - r.target >= 0 ? "+" : ""}${r.actual - r.target}</td>
-        <td>${r.target ? Math.round(r.actual / r.target * 100) : 0}%</td></tr>`).join("")}</tbody></table>
+        <td>${r.target ? Math.round(r.actual / r.target * 100) : 0}%</td></tr>`).join("")}</tbody></table></div>
     </div>
   `;
 }
@@ -2563,11 +3330,13 @@ function renderIntakes(root) {
   `;
 }
 function openNewIntakeModal() {
+  window.__intakeOverlapConfirmed = false;
   openModal(`
     <div class="modal-header"><h2>New Intake Cycle (UC70)</h2><button class="close-x" onclick="closeModal()">&times;</button></div>
     <div class="modal-body">
       <div class="field"><label class="required">Name</label><input id="in_name" placeholder="e.g. January 2027 Intake"></div>
       <div class="grid-2"><div class="field"><label>Start Date</label><input id="in_start" type="date"></div><div class="field"><label>End Date</label><input id="in_end" type="date"></div></div>
+      <div id="intakeValidationNotice"></div>
     </div>
     <div class="modal-footer"><button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" onclick="saveNewIntake()">Save</button></div>
   `);
@@ -2579,7 +3348,14 @@ function saveNewIntake() {
   const end = document.getElementById("in_end").value;
   if (start && end) {
     const overlap = DB.intakes.find(i => i.start && i.end && start <= i.end && end >= i.start);
-    if (overlap && !confirm(`Warning (UC70 - AF1): these dates overlap with "${overlap.name}" (${fmtDate(overlap.start)} → ${fmtDate(overlap.end)}). Create anyway?`)) {
+    // Inline warning rather than a native confirm() — this modal is already open, and
+    // confirmModal() would replace it. Mirrors the duplicate-lead flow in saveLeadModal.
+    if (overlap && !window.__intakeOverlapConfirmed) {
+      document.getElementById("intakeValidationNotice").innerHTML = `
+        <div class="notice">${icon("warn")} These dates overlap with <b>${esc(overlap.name)}</b>
+        (${fmtDate(overlap.start)} → ${fmtDate(overlap.end)}) — UC70 - AF1.
+        <div style="margin-top:8px"><button class="btn sm" onclick="window.__intakeOverlapConfirmed=true;saveNewIntake();">Create Anyway</button>
+        <button class="btn sm secondary" onclick="closeModal()">Cancel</button></div></div>`;
       return;
     }
   }
@@ -2658,8 +3434,8 @@ function renderAudit(root) {
   root.innerHTML = `
     <div class="page-header"><div><h1>Audit Log</h1><div class="sub">Full CRUD audit trail — who, when, old/new values (UC80) · dedicated entries for status/assignment/transfer changes (UC81) · admin-facing filters &amp; export (UC82)</div></div>
       <div style="display:flex;gap:8px;">
-        <button class="btn secondary sm" onclick="exportAudit()">⬇ CSV</button>
-        <button class="btn sm" onclick="exportAuditPDF()" title="UC82">📄 Export PDF</button>
+        <button class="btn secondary sm" onclick="exportAudit()">${icon("download")} CSV</button>
+        <button class="btn sm" onclick="exportAuditPDF()" title="UC82">${icon("document")} Export PDF</button>
       </div>
     </div>
     <div class="toolbar">
@@ -2743,8 +3519,8 @@ function renderAdmin(root) {
   state.adminTab = state.adminTab || "pipeline";
   root.innerHTML = `
     <div class="page-header">
-      <div><h1>Admin Settings</h1><div class="sub">Runtime configuration — no code changes required. ${isAdmin ? "" : "🔒 Read-only for " + esc(currentRole()) + "."}</div></div>
-      ${isAdmin ? `<button class="btn secondary sm" onclick="exportConfigJSON()">⬇ Export Config</button>` : ""}
+      <div><h1>Admin Settings</h1><div class="sub">Runtime configuration — no code changes required. ${isAdmin ? "" : icon("lock") + " Read-only for " + esc(currentRole()) + "."}</div></div>
+      ${isAdmin ? `<button class="btn secondary sm" onclick="exportConfigJSON()">${icon("download")} Export Config</button>` : ""}
     </div>
     <div class="tabs">${ADMIN_TABS.map(([k, l]) => `<div class="tab ${state.adminTab === k ? "active" : ""}" data-k="${k}">${l}</div>`).join("")}</div>
     <div id="adminBody"></div>
@@ -2778,7 +3554,7 @@ function renderAdminBody() {
   const isAdmin = currentRole() === "Admin";
   const tab = state.adminTab;
   const lock = isAdmin ? "" : "disabled";
-  const lockNote = isAdmin ? "" : "<p class='small-muted' style='margin-top:8px'>🔒 Only Admins can edit this.</p>";
+  const lockNote = isAdmin ? "" : "<p class='small-muted' style='margin-top:8px'>" + icon("lock") + " Only Admins can edit this.</p>";
 
   if (tab === "pipeline") body.innerHTML = adminPipelineHTML(lock, lockNote, isAdmin);
   if (tab === "fields") body.innerHTML = adminFieldsHTML(lock, lockNote, isAdmin);
@@ -2829,7 +3605,7 @@ function adminPipelineHTML(lock, lockNote, isAdmin) {
       <div class="table-wrap"><table><thead><tr><th>From \\ To</th>${stages().map(s => `<th>${s}</th>`).join("")}</tr></thead>
       <tbody>${stages().map(from => `<tr><td><b>${stageBadge(from)}</b></td>${stages().map(to => `
         <td style="text-align:center">${from === to ? "<span class='small-muted'>—</span>" : `<input type="checkbox" class="transitionChk" data-from="${from}" data-to="${to}" ${(DB.transitionRules[from] || []).includes(to) ? "checked" : ""} ${!["Admin"].includes(currentRole()) ? "disabled" : ""}>`}</td>`).join("")}</tr>`).join("")}</tbody></table></div>
-      ${currentRole() === "Admin" ? `<button class="btn sm" style="margin-top:10px" onclick="saveTransitionRules()">Save Rules</button> <button class="btn sm secondary" onclick="resetTransitionRules()">Reset to Defaults</button>` : "<p class='small-muted' style='margin-top:8px'>🔒 Only Admins can edit these rules.</p>"}
+      ${currentRole() === "Admin" ? `<button class="btn sm" style="margin-top:10px" onclick="saveTransitionRules()">Save Rules</button> <button class="btn sm secondary" onclick="resetTransitionRules()">Reset to Defaults</button>` : "<p class='small-muted' style='margin-top:8px'>" + icon("lock") + " Only Admins can edit these rules.</p>"}
     </div>
 
     <div class="card">
@@ -2855,7 +3631,7 @@ function adminPipelineHTML(lock, lockNote, isAdmin) {
       <div id="checklistEditor">${(DB.checklistTemplate || []).map((item, i) => `
         <div class="checkbox-row" style="margin-bottom:8px">
           <input type="text" class="checklistItem" value="${esc(item)}" ${lock}>
-          ${isAdmin ? `<button class="btn sm ghost" onclick="removeChecklistItem(${i})" title="Remove">✕</button>` : ""}
+          ${isAdmin ? `<button class="btn sm ghost" onclick="removeChecklistItem(${i})" title="Remove">${icon("x")}</button>` : ""}
         </div>`).join("")}</div>
       ${isAdmin ? `<button class="btn sm secondary" onclick="addChecklistItem()">+ Add Item</button> <button class="btn sm" onclick="saveChecklistTemplate()">Save Checklist</button>` : lockNote}
     </div>
@@ -2898,6 +3674,15 @@ function adminFieldsHTML(lock, lockNote, isAdmin) {
         <select class="programTypeSel" data-program="${esc(p)}" ${lock}>${PROGRAM_TYPES.map(t => `<option ${programType(p) === t ? "selected" : ""}>${t}</option>`).join("")}</select>
       </td></tr>`).join("")}</tbody></table></div>
       ${isAdmin ? `<button class="btn sm" style="margin-top:10px" onclick="saveProgramTypes()">Save Program Types</button>` : lockNote}
+    </div>
+
+    <div class="card">
+      <h3>Programs by University <span class="pill">Application Form — Educational Qualification</span></h3>
+      <p class="small-muted">Tick which programs each university offers. Drives the University → Program cascade on the Apply Online application form.</p>
+      <div class="table-wrap"><table><thead><tr><th>University \\ Program</th>${picklist('programs').map(p => `<th>${esc(p)}</th>`).join("")}</tr></thead>
+      <tbody>${picklist('universities').map(uni => `<tr><td><b>${esc(uni)}</b></td>${picklist('programs').map(p => `
+        <td style="text-align:center"><input type="checkbox" class="uniProgChk" data-uni="${esc(uni)}" data-program="${esc(p)}" ${programsForUniversity(uni).includes(p) ? "checked" : ""} ${lock}></td>`).join("")}</tr>`).join("")}</tbody></table></div>
+      ${isAdmin ? `<button class="btn sm" style="margin-top:10px" onclick="saveProgramsByUniversity()">Save Programs by University</button>` : lockNote}
     </div>
 
     <div class="card">
@@ -3021,7 +3806,7 @@ function renderPermEditor() {
     </div>
     <hr class="sep">
     <div class="checkbox-row"><input type="checkbox" id="permViewAmounts" ${p.viewAmounts ? "checked" : ""} ${isAdmin ? "" : "disabled"}><label style="margin:0;text-transform:none">May view commission <b>amounts</b> (unchecked = masked, UC20 / UC79)</label></div>
-    ${isAdmin ? `<button class="btn sm" style="margin-top:12px" onclick="saveRolePermissions()">Save Permissions for ${esc(role)}</button>` : "<p class='small-muted' style='margin-top:8px'>🔒 Only Admins can edit role permissions.</p>"}
+    ${isAdmin ? `<button class="btn sm" style="margin-top:12px" onclick="saveRolePermissions()">Save Permissions for ${esc(role)}</button>` : "<p class='small-muted' style='margin-top:8px'>" + icon("lock") + " Only Admins can edit role permissions.</p>"}
   `;
 }
 function saveRolePermissions() {
@@ -3197,20 +3982,27 @@ function deleteStage(key) {
     toast(`Cannot delete — ${inUse} lead(s) are still in "${stageLabel(key)}". Move them first (UC64 - AF1).`, "error");
     return;
   }
-  if (!confirm(`Delete the stage "${stageLabel(key)}"? This cannot be undone.`)) return;
-  DB.stages = stages().filter(s => s !== key);
-  delete DB.statusLabels[key];
-  delete DB.statusColors[key];
-  delete DB.transitionRules[key];
-  delete DB.mandatoryFields[key];
-  // Drop any inbound transitions pointing at the removed stage
-  Object.keys(DB.transitionRules).forEach(from => {
-    DB.transitionRules[from] = (DB.transitionRules[from] || []).filter(t => t !== key);
+  confirmModal({
+    title: "Delete this stage?",
+    message: `"${stageLabel(key)}" will be removed from the pipeline, along with its transition rules and mandatory-field settings. This cannot be undone.`,
+    confirmLabel: "Delete Stage",
+    danger: true,
+    onConfirm: () => {
+      DB.stages = stages().filter(s => s !== key);
+      delete DB.statusLabels[key];
+      delete DB.statusColors[key];
+      delete DB.transitionRules[key];
+      delete DB.mandatoryFields[key];
+      // Drop any inbound transitions pointing at the removed stage
+      Object.keys(DB.transitionRules).forEach(from => {
+        DB.transitionRules[from] = (DB.transitionRules[from] || []).filter(t => t !== key);
+      });
+      logAudit("DELETE", "Stage:" + key, `Stage removed from pipeline (UC64)`);
+      saveDB();
+      toast("Stage deleted.", "success");
+      renderAdminBody();
+    }
   });
-  logAudit("DELETE", "Stage:" + key, `Stage removed from pipeline (UC64)`);
-  saveDB();
-  toast("Stage deleted.", "success");
-  renderAdminBody();
 }
 
 function moveStage(key, dir) {
@@ -3245,16 +4037,23 @@ function resetStages() {
     toast(`Cannot reset — leads still sit in: ${blocked.map(stageLabel).join(", ")} (UC64 - AF1).`, "error");
     return;
   }
-  if (!confirm("Reset the pipeline to the four built-in stages? Custom stages will be removed.")) return;
-  DB.stages = STAGES.slice();
-  DB.statusLabels = STAGES.reduce((m, s) => (m[s] = s, m), {});
-  DB.statusColors = Object.assign({}, STAGE_COLORS);
-  DB.transitionRules = JSON.parse(JSON.stringify(STAGE_TRANSITIONS));
-  DB.mandatoryFields = JSON.parse(JSON.stringify(STAGE_MANDATORY_FIELDS));
-  logAudit("RESET", "Stages", "Pipeline reset to built-in stages");
-  saveDB();
-  toast("Pipeline reset to defaults.", "success");
-  renderAdminBody();
+  confirmModal({
+    title: "Reset the pipeline?",
+    message: "The pipeline returns to the four built-in stages. Custom stages, their labels, colours, transition rules and mandatory-field settings will be removed.",
+    confirmLabel: "Reset Pipeline",
+    danger: true,
+    onConfirm: () => {
+      DB.stages = STAGES.slice();
+      DB.statusLabels = STAGES.reduce((m, s) => (m[s] = s, m), {});
+      DB.statusColors = Object.assign({}, STAGE_COLORS);
+      DB.transitionRules = JSON.parse(JSON.stringify(STAGE_TRANSITIONS));
+      DB.mandatoryFields = JSON.parse(JSON.stringify(STAGE_MANDATORY_FIELDS));
+      logAudit("RESET", "Stages", "Pipeline reset to built-in stages");
+      saveDB();
+      toast("Pipeline reset to defaults.", "success");
+      renderAdminBody();
+    }
+  });
 }
 
 function saveTransitionRules() {
@@ -3294,6 +4093,17 @@ function saveProgramTypes() {
   saveDB();
   toast("Program types saved.", "success");
 }
+function saveProgramsByUniversity() {
+  const map = {};
+  picklist('universities').forEach(u => map[u] = []);
+  document.querySelectorAll(".uniProgChk").forEach(chk => {
+    if (chk.checked) (map[chk.dataset.uni] = map[chk.dataset.uni] || []).push(chk.dataset.program);
+  });
+  DB.programsByUniversity = map;
+  logAudit("UPDATE", "ProgramsByUniversity", JSON.stringify(map));
+  saveDB();
+  toast("Programs by university saved.", "success");
+}
 function saveLeadSourceTargets() {
   const targets = Object.assign({}, DB.leadSourceTargets);
   document.querySelectorAll(".sourceTargetInput").forEach(inp => {
@@ -3331,7 +4141,9 @@ function saveReportConfig() {
 function init() {
   renderTopBar();
   renderSidebar();
+  // Setting the hash fires `hashchange`, which calls router() on its own — calling it
+  // again here would render the dashboard twice on every cold start.
   if (!location.hash) location.hash = "#/dashboard";
-  router();
+  else router();
 }
 init();

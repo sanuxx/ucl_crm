@@ -24,7 +24,19 @@ function defaultProgramTypes() {
     "MBA": "Master's"
   };
 }
-const LEAD_SOURCES = ["Student", "Staff", "Digital", "Bulk Upload", "Exhibition", "Walk-in", "Agent Referral"];
+
+// Application Form — Educational Qualification section: which programs each university offers,
+// admin-editable under Admin → Fields & Picklists → Programs by University.
+function defaultProgramsByUniversity() {
+  return {
+    "Cardiff Metropolitan": ["Foundation in Business & IT", "BSc Computing", "MSc Data Science"],
+    "London South Bank": ["BA Business Management", "MBA", "BSc Accounting & Finance"],
+    "Coventry University": ["BSc Computing", "MSc Data Science", "BA Marketing"],
+    "University of Sunderland": ["Foundation in Business & IT", "BA Business Management", "BSc Accounting & Finance"],
+    "Northumbria University": ["MBA", "BA Marketing", "BSc Computing"]
+  };
+}
+const LEAD_SOURCES = ["Student", "Staff", "Digital", "Bulk Upload", "Exhibition", "Walk-in", "Agent Referral", "Website"];
 const DIGITAL_SUBSOURCES = ["Facebook", "Google", "Instagram", "LinkedIn"];
 // Mode of Contact — how the lead reached out to the organisation (new lead field)
 const MODES_OF_CONTACT = ["Email", "Telephone Call", "Hotline", "General Line", "Walk-in", "Social Media", "Website Form"];
@@ -144,9 +156,20 @@ const APPLICATION_STATUSES = ["Not Sent", "Sent", "Submitted", "Reviewed"];
 const OFFER_TYPES = ["Conditional", "Unconditional"];
 
 function defaultApplicationForm() {
-  return { status: "Not Sent", sentAt: "", submittedAt: "", reviewedAt: "", reviewedBy: "",
+  return {
+    status: "Not Sent", sentAt: "", submittedAt: "", reviewedAt: "", reviewedBy: "",
+    // Academic Admin verification gate — locks the application once confirmed (UC: Application Verification)
+    academicConfirmation: { status: "Not Confirmed", confirmedBy: "", confirmedAt: "" },
+    // Offer Release & Student Registration Process
+    offerRelease: { status: "Not Released", releasedBy: "", releasedAt: "" },
+    discountApproval: { status: "Not Requested", requestedPercent: "", requestedAmount: "", note: "",
+      requestedBy: "", requestedAt: "", decidedBy: "", decidedAt: "", decisionNote: "" },
     offerLetter: { status: "Not Issued", type: "", issuedAt: "" },
-    paymentPlan: { status: "Not Sent", installments: [], sentAt: "" } };
+    paymentPlan: { status: "Not Sent", installments: [], sentAt: "" },
+    paymentConfirmed: { status: "Not Confirmed", confirmedBy: "", confirmedAt: "" },
+    pushedToAdmin: { status: "Not Pushed", pushedBy: "", pushedAt: "" },
+    smsTransfer: { status: "Not Transferred", transferredBy: "", transferredAt: "" }
+  };
 }
 
 const CHECKLIST_TEMPLATE = [
@@ -157,7 +180,7 @@ const CHECKLIST_TEMPLATE = [
   "Financial capability discussed"
 ];
 
-const ROLES = ["Counsellor", "Manager", "Head of Marketing", "CEO", "Commission Admin", "Finance", "Admin", "Agent"];
+const ROLES = ["Counsellor", "Manager", "Head of Marketing", "CEO", "Commission Admin", "Finance", "Admin", "Agent", "Academic Admin"];
 
 /* ---------------- UC49 — configurable role visibility ---------------- */
 const DASHBOARD_WIDGETS = [
@@ -199,6 +222,9 @@ function defaultRolePermissions() {
   perms["Agent"].widgets = ["activity"];
   perms["Agent"].reports = ["agent"];
   perms["Finance"].reports = ["counsellor", "agent"];
+  // Academic Admin gets a dedicated Application Verification workspace instead of the sales dashboard/reports
+  perms["Academic Admin"].widgets = [];
+  perms["Academic Admin"].reports = [];
   return perms;
 }
 
@@ -217,7 +243,8 @@ function seedUsers() {
     { id: "u_c1", name: "Ishara Jayasuriya", role: "Counsellor", managerId: "u_mgr1", domain: "Colombo Branch" },
     { id: "u_c2", name: "Tharindu Silva", role: "Counsellor", managerId: "u_mgr1", domain: "Colombo Branch" },
     { id: "u_c3", name: "Nimasha Perera", role: "Counsellor", managerId: "u_mgr2", domain: "Kandy Branch" },
-    { id: "u_agent1", name: "Global Edu Partners (Agent)", role: "Agent", managerId: "u_mgr2", domain: "Online Division" }
+    { id: "u_agent1", name: "Global Edu Partners (Agent)", role: "Agent", managerId: "u_mgr2", domain: "Online Division" },
+    { id: "u_acadmin", name: "Priyanka Rodrigo (Academic Admin)", role: "Academic Admin", managerId: "u_ceo", domain: "All" }
   ];
 }
 
@@ -241,7 +268,8 @@ function seedIntakes() {
   return [
     { id: "in_jan26", name: "January 2026 Intake", start: "2026-01-05", end: "2026-01-31", programs: PROGRAMS },
     { id: "in_may26", name: "May 2026 Intake", start: "2026-05-04", end: "2026-05-30", programs: PROGRAMS },
-    { id: "in_sep26", name: "September 2026 Intake", start: "2026-09-01", end: "2026-09-28", programs: PROGRAMS }
+    { id: "in_sep26", name: "September 2026 Intake", start: "2026-09-01", end: "2026-09-28", programs: PROGRAMS },
+    { id: "in_jan27", name: "January 2027 Intake", start: "2027-01-04", end: "2027-01-30", programs: PROGRAMS }
   ];
 }
 
@@ -307,25 +335,51 @@ function makeApplicationForm(stage) {
     f.status = roll < 0.4 ? "Not Sent" : roll < 0.75 ? "Sent" : "Submitted";
   } else if (stage === "Converted") {
     f.status = roll < 0.5 ? "Submitted" : "Reviewed";
-    if (f.status === "Reviewed" && Math.random() > 0.4) {
-      f.offerLetter = { status: "Issued", type: rand(OFFER_TYPES), issuedAt: new Date().toISOString() };
-      if (Math.random() > 0.5) {
-        f.paymentPlan = {
-          status: "Sent", sentAt: new Date().toISOString(),
-          installments: [
-            { label: "Registration Fee", amount: 25000, dueDate: todayISO() },
-            { label: "Installment 1", amount: 200000, dueDate: isoDateOffset(30) },
-            { label: "Installment 2", amount: 200000, dueDate: isoDateOffset(90) }
-          ]
-        };
-      }
-    }
   } else {
     f.status = roll < 0.5 ? "Not Sent" : "Sent";
   }
   if (f.status !== "Not Sent") f.sentAt = new Date().toISOString();
   if (f.status === "Submitted" || f.status === "Reviewed") f.submittedAt = new Date().toISOString();
   if (f.status === "Reviewed") { f.reviewedAt = new Date().toISOString(); f.reviewedBy = "System"; }
+
+  // Offer Release & Student Registration Process — progresses probabilistically once Reviewed,
+  // so the Academic Admin queue, Pending Offer dashboard and registration pipeline aren't empty on a fresh seed.
+  if (f.status === "Reviewed" && Math.random() < 0.7) {
+    f.academicConfirmation = { status: "Confirmed", confirmedBy: "Priyanka Rodrigo (Academic Admin)", confirmedAt: new Date().toISOString() };
+    if (Math.random() < 0.7) {
+      f.offerRelease = { status: "Released", releasedBy: "Priyanka Rodrigo (Academic Admin)", releasedAt: new Date().toISOString() };
+      if (Math.random() < 0.5) {
+        const approved = Math.random() < 0.7;
+        f.discountApproval = {
+          status: approved ? "Approved" : "Pending", requestedPercent: rand([5, 10, 15]), requestedAmount: "",
+          note: "Requested at counsellor's discretion", requestedBy: "System", requestedAt: new Date().toISOString(),
+          decidedBy: approved ? "Anjali Perera" : "", decidedAt: approved ? new Date().toISOString() : "", decisionNote: approved ? "Approved" : ""
+        };
+      }
+      if (Math.random() < 0.6) {
+        f.offerLetter = { status: "Issued", type: rand(OFFER_TYPES), issuedAt: new Date().toISOString() };
+        if (Math.random() < 0.6) {
+          f.paymentPlan = {
+            status: "Sent", sentAt: new Date().toISOString(),
+            installments: [
+              { label: "Registration Fee", amount: 25000, dueDate: todayISO() },
+              { label: "Installment 1", amount: 200000, dueDate: isoDateOffset(30) },
+              { label: "Installment 2", amount: 200000, dueDate: isoDateOffset(90) }
+            ]
+          };
+          if (Math.random() < 0.5) {
+            f.paymentConfirmed = { status: "Confirmed", confirmedBy: "System", confirmedAt: new Date().toISOString() };
+            if (Math.random() < 0.6) {
+              f.pushedToAdmin = { status: "Pushed", pushedBy: "System", pushedAt: new Date().toISOString() };
+              if (Math.random() < 0.5) {
+                f.smsTransfer = { status: "Transferred", transferredBy: "Priyanka Rodrigo (Academic Admin)", transferredAt: new Date().toISOString() };
+              }
+            }
+          }
+        }
+      }
+    }
+  }
   return f;
 }
 
@@ -459,6 +513,7 @@ function seedLeads(users, intakes) {
       followUpLog: makeFollowUpLog(created),
       escalated: false,
       applicationForm: makeApplicationForm(stage),
+      websiteLead: false, // Website Leads — true only for leads submitted directly via the Apply Online form with no counsellor
       tasks: makeStageTasks(stage, created),
       createdAt: created,
       activity: [
@@ -467,6 +522,44 @@ function seedLeads(users, intakes) {
       ]
     };
     leads.push(lead);
+  }
+  return leads;
+}
+
+// Website Leads — a handful of leads submitted directly via Apply Online with no counsellor,
+// so the Website Leads dashboard (Head of Marketing) isn't empty on a fresh seed.
+function seedWebsiteLeads(intakes) {
+  const leads = [];
+  const count = 4;
+  for (let i = 0; i < count; i++) {
+    const first = rand(FIRST_NAMES), last = rand(LAST_NAMES);
+    const university = rand(UNIVERSITIES);
+    const programsHere = defaultProgramsByUniversity()[university] || PROGRAMS;
+    const program = rand(programsHere);
+    const progType = defaultProgramTypes()[program] || "Other";
+    leads.push({
+      id: uid("lead"), name: `${first} ${last}`,
+      mobile: "07" + Math.floor(10000000 + Math.random() * 89999999),
+      email: `${first}.${last}.web@example.com`.toLowerCase(),
+      leadSource: "Website", modeOfContact: "Website Form", digitalSubSource: null,
+      studentId: "", staffName: "", schoolOrCompany: "", detailedStatus: "",
+      university, program, country: "Sri Lanka", district: rand(DISTRICTS), districtOther: "",
+      previousSchool: progType === "Foundation" ? rand(["Royal College", "Ladies' College", "Trinity College"]) : "",
+      priorQualificationType: progType === "Foundation" ? rand(["O/L", "A/L"]) : "",
+      bachelorsDegree: progType === "Master's" ? rand(["BSc Computing", "BA Business Management"]) : "",
+      bachelorsUniversity: progType === "Master's" ? rand(UNIVERSITIES) : "",
+      examType: "Local A/L", resultsPending: true, olSubjects: [], alSubjects: [], olResult: "", alResult: "",
+      languageTest: "None", languageScore: "",
+      stage: "Open", deactivated: false, deactivationReason: "", lossReason: "",
+      assignedTo: "", intakeId: rand(intakes).id,
+      domain: rand(DOMAINS), isReferral: false, referralType: "", agentId: "",
+      checklist: makeChecklist(false), commissionStatus: "Pending", tuitionFee: 850000, amountPaid: 0, outstandingBalance: 0,
+      nextFollowUp: "", followUpLog: [], escalated: false,
+      applicationForm: Object.assign(defaultApplicationForm(), { status: "Submitted", sentAt: new Date().toISOString(), submittedAt: new Date().toISOString() }),
+      websiteLead: true, tasks: [],
+      createdAt: randDateWithinDays(10),
+      activity: [{ ts: new Date().toISOString(), user: "System", type: "Create", text: "Application submitted directly via website — no counsellor assigned" }]
+    });
   }
   return leads;
 }
@@ -517,7 +610,7 @@ function seedLeadSourceTargets() {
 function defaultDB() {
   const users = seedUsers();
   const intakes = seedIntakes();
-  const leads = seedLeads(users, intakes);
+  const leads = seedLeads(users, intakes).concat(seedWebsiteLeads(intakes));
   return {
     users,
     leads,
@@ -564,6 +657,7 @@ function defaultDB() {
     pipelineStageTargets: seedPipelineStageTargets(), // Head of Marketing — Pipeline Target vs Actual dashboard
     leadSourceTargets: seedLeadSourceTargets(), // Head of Marketing — Lead Source dashboard
     programTypes: defaultProgramTypes(), // Program-Based Field Configuration
+    programsByUniversity: defaultProgramsByUniversity(), // Application Form — Educational Qualification cascade
     reports: [], // generated commission reports (UC6-UC13)
     reportConfig: { // UC12
       columns: ["Student Name", "University", "Program", "Commission Amount", "Status"],
@@ -628,8 +722,26 @@ function migrateDB() {
     if (l.bachelorsDegree === undefined) l.bachelorsDegree = "";
     if (l.bachelorsUniversity === undefined) l.bachelorsUniversity = "";
     if (l.applicationForm === undefined) l.applicationForm = defaultApplicationForm();
+    // Offer Release & Student Registration Process — merge in any sub-objects added after this
+    // lead's applicationForm was first saved, without disturbing values already recorded.
+    const freshAF = defaultApplicationForm();
+    Object.keys(freshAF).forEach(k => {
+      if (typeof freshAF[k] === "object" && freshAF[k] !== null) {
+        l.applicationForm[k] = Object.assign({}, freshAF[k], l.applicationForm[k] || {});
+      } else if (l.applicationForm[k] === undefined) {
+        l.applicationForm[k] = freshAF[k];
+      }
+    });
     if (l.tasks === undefined) l.tasks = [];
+    if (l.websiteLead === undefined) l.websiteLead = false;
   });
+  // Backfill the Academic Admin user + role permissions for demo DBs saved before this role existed
+  if (DB.users && !DB.users.some(u => u.role === "Academic Admin")) {
+    DB.users.push({ id: "u_acadmin", name: "Priyanka Rodrigo (Academic Admin)", role: "Academic Admin", managerId: "u_ceo", domain: "All" });
+  }
+  if (DB.rolePermissions && !DB.rolePermissions["Academic Admin"]) {
+    DB.rolePermissions["Academic Admin"] = { widgets: [], reports: [], viewAmounts: false };
+  }
   if (DB.programTypes) Object.keys(defaultProgramTypes()).forEach(p => {
     if (DB.programTypes[p] === undefined) DB.programTypes[p] = defaultProgramTypes()[p];
   });
