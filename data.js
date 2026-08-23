@@ -36,10 +36,46 @@ function defaultProgramsByUniversity() {
     "Northumbria University": ["MBA", "BA Marketing", "BSc Computing"]
   };
 }
-const LEAD_SOURCES = ["Student", "Staff", "Digital", "Bulk Upload", "Exhibition", "Walk-in", "Agent Referral", "Website"];
+const LEAD_SOURCES = [
+  "Facebook",
+  "LinkedIn",
+  "YouTube",
+  "Instagram",
+  "Website",
+  "Student Referral",
+  "Staff Referral",
+  "Agent Referral",
+  "Email Campaigns",
+  "Database",
+  "UCL Event",
+  "University Partner Event",
+  "Agent Partner Event",
+  "School Event Sponsorship",
+  "Corporate Event Sponsorship",
+  "School Event General",
+  "Corporate Event General",
+  "Exhibition",
+  "Radio",
+  "Billboards",
+  "Television",
+  "Direct Call Counsellor",
+  "UCL Alumni",
+  "Online Websites",
+  "Press Adverts",
+  "Press Releases",
+];
 const DIGITAL_SUBSOURCES = ["Facebook", "Google", "Instagram", "LinkedIn"];
 // Mode of Contact — how the lead reached out to the organisation (new lead field)
-const MODES_OF_CONTACT = ["Email", "Telephone Call", "Hotline", "General Line", "Walk-in", "Social Media", "Website Form"];
+const MODES_OF_CONTACT = [
+  "Walk In",
+  "Digital Hotline",
+  "General  Hotline",
+  "Exhibition",
+  "Web Chat - Edusite",
+  "UCL Info Email",
+  "Social Media Messaging",
+  "Direct Call Counsellor",
+];
 const LOSS_REASONS = ["Financial constraints", "Went to competitor", "Visa rejected", "Not interested", "Unreachable", "Chose local university"];
 
 // Tenants / domains (UC30) — "All" means a global (unpartitioned) user
@@ -604,7 +640,7 @@ function seedPipelineStageTargets() {
   return { Open: 90, Qualified: 55, Converted: 30, Closed: 20 };
 }
 function seedLeadSourceTargets() {
-  return { Student: 20, Staff: 12, Digital: 25, "Bulk Upload": 10, Exhibition: 15, "Walk-in": 10, "Agent Referral": 8 };
+  return { Facebook: 20, "Student Referral": 15, Website: 20, Exhibition: 15, "Agent Referral": 12, Database: 10, "UCL Event": 8 };
 }
 
 function defaultDB() {
@@ -703,6 +739,12 @@ function migrateDB() {
   if (DB.picklists) Object.keys(fresh.picklists).forEach(k => {
     if (!Array.isArray(DB.picklists[k]) || !DB.picklists[k].length) DB.picklists[k] = fresh.picklists[k];
   });
+  // Force-refresh Lead Source / Mode of Contact picklists to the current admin-defined lists
+  // (these were expanded after many demo DBs were already saved to localStorage with the old, shorter lists)
+  if (DB.picklists) {
+    DB.picklists.leadSources = LEAD_SOURCES.slice();
+    DB.picklists.modesOfContact = MODES_OF_CONTACT.slice();
+  }
   DB.leads.forEach(l => {
     if (l.escalated === undefined) l.escalated = false;
     if (l.districtOther === undefined) l.districtOther = "";
@@ -734,6 +776,25 @@ function migrateDB() {
     });
     if (l.tasks === undefined) l.tasks = [];
     if (l.websiteLead === undefined) l.websiteLead = false;
+    // Remap old Lead Source / Mode of Contact values (pre-expansion picklists) to the current lists
+    const LEAD_SOURCE_MIGRATION = {
+      Student: "Student Referral",
+      Staff: "Staff Referral",
+      Digital: "Online Websites",
+      "Bulk Upload": "Database",
+      "Walk-in": "Direct Call Counsellor",
+    };
+    if (LEAD_SOURCE_MIGRATION[l.leadSource]) l.leadSource = LEAD_SOURCE_MIGRATION[l.leadSource];
+    const MODE_OF_CONTACT_MIGRATION = {
+      Email: "UCL Info Email",
+      "Telephone Call": "Direct Call Counsellor",
+      Hotline: "Digital Hotline",
+      "General Line": "General  Hotline",
+      "Walk-in": "Walk In",
+      "Social Media": "Social Media Messaging",
+      "Website Form": "Web Chat - Edusite",
+    };
+    if (MODE_OF_CONTACT_MIGRATION[l.modeOfContact]) l.modeOfContact = MODE_OF_CONTACT_MIGRATION[l.modeOfContact];
   });
   // Backfill the Academic Admin user + role permissions for demo DBs saved before this role existed
   if (DB.users && !DB.users.some(u => u.role === "Academic Admin")) {
