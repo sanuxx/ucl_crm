@@ -646,7 +646,7 @@ function renderNotQualified(root) {
         ${leads.map(l => `
           <tr>
             <td><a href="javascript:void(0)" onclick="openLeadModal('${l.id}')"><b>${esc(l.name)}</b></a><div class="small-muted">${esc(l.mobile)}</div></td>
-            <td>${esc(l.leadSource)}</td>
+            <td>${esc(l.leadSource)}${l.leadSource === "Student Referral" && l.studentId ? `<div class="small-muted">${esc(l.studentId)}</div>` : ""}${l.leadSource === "Staff Referral" && l.staffName ? `<div class="small-muted">${esc(l.staffName)}</div>` : ""}</td>
             <td>${esc(l.modeOfContact) || "<span class='small-muted'>—</span>"}</td>
             <td>${esc(l.detailedStatus) || "<span class='small-muted'>—</span>"}</td>
             <td>${esc(userName(l.assignedTo))}</td>
@@ -783,7 +783,7 @@ function renderLeadTable() {
           <tr>
             ${canBulkAction() ? `<td><input type="checkbox" class="rowSel" data-id="${l.id}" ${selectedLeadIds().includes(l.id) ? "checked" : ""} onchange="toggleLeadSelection('${l.id}',this.checked)"></td>` : ""}
             <td><a href="javascript:void(0)" onclick="openLeadModal('${l.id}')"><b>${esc(l.name)}</b></a><div class="small-muted">${esc(l.mobile)}</div></td>
-            <td>${esc(l.leadSource)}${l.digitalSubSource ? " · " + esc(l.digitalSubSource) : ""}</td>
+            <td>${esc(l.leadSource)}${l.digitalSubSource ? " · " + esc(l.digitalSubSource) : ""}${l.leadSource === "Student Referral" && l.studentId ? `<div class="small-muted">${esc(l.studentId)}</div>` : ""}${l.leadSource === "Staff Referral" && l.staffName ? `<div class="small-muted">${esc(l.staffName)}</div>` : ""}</td>
             <td>${l.university || l.program
                 ? esc(l.university || l.program) + (l.university && l.program ? `<div class="small-muted">${esc(l.program)}</div>` : "")
                 : "<span class='small-muted'>—</span>"}</td>
@@ -1012,7 +1012,7 @@ function openLeadModal(leadId, initialTab) {
   const isNew = !leadId;
   const lead = isNew ? null : DB.leads.find(l => l.id === leadId);
   window.__editingLead = isNew ? {
-    id: null, name: "", mobile: "", email: "", leadSource: "Student", modeOfContact: picklist('modesOfContact')[0] || "", digitalSubSource: "",
+    id: null, name: "", mobile: "", email: "", leadSource: "Student Referral", modeOfContact: picklist('modesOfContact')[0] || "", digitalSubSource: "",
     studentId: "", staffName: "", university: "", program: "", country: "Sri Lanka", district: "", districtOther: "",
     previousSchool: "", priorQualificationType: "", bachelorsDegree: "", bachelorsUniversity: "",
     examType: "Local A/L", resultsPending: false, olResult: "", alResult: "", languageTest: "None", languageScore: "",
@@ -1047,7 +1047,7 @@ function renderLeadModal() {
   const isNew = !L.id;
   const tab = window.__leadModalTab;
 
-  const tabs = isNew ? [["details", "Details"]] : [["details", "Details"], ["academic", "Academic"], ["checklist", "Checklist"], ["notes", "Notes & Tasks"], ["application", "Application"], ["timeline", "Timeline"]];
+  const tabs = isNew ? [["details", "Details"]] : [["details", "Details"], ["academic", "Academic"], ["checklist", "Checklist"], ["notes", "Notes & Tasks"], ["application", "Application"], ["offerLetter", "Offer Letter"], ["paymentPlan", "Payment Plan"], ["timeline", "Timeline"]];
 
   openModal(`
     <div class="modal-header"><h2>${isNew ? "New Lead (UC21/UC22)" : esc(L.name)}</h2><button class="close-x" onclick="closeModal()">&times;</button></div>
@@ -1084,8 +1084,8 @@ function renderLeadModalTab() {
         <div class="field ${L.leadSource === "Digital" ? "" : "hidden"}" id="wrap_digitalSub"><label>Digital Sub-Source</label>
           <select id="f_digitalSub">${picklist('digitalSubSources').map(s => `<option ${L.digitalSubSource === s ? "selected" : ""}>${s}</option>`).join("")}</select>
         </div>
-        <div class="field ${L.leadSource === "Student" ? "" : "hidden"}" id="wrap_studentId"><label class="required">Student ID <span class="pill">UC21 dynamic</span></label><input id="f_studentId" value="${esc(L.studentId)}"></div>
-        <div class="field ${L.leadSource === "Staff" ? "" : "hidden"}" id="wrap_staffName"><label class="required">Staff Name <span class="pill">UC22 dynamic</span></label><input id="f_staffName" value="${esc(L.staffName)}"></div>
+        <div class="field ${L.leadSource === "Student Referral" ? "" : "hidden"}" id="wrap_studentId"><label class="required">Student ID <span class="pill">UC21 dynamic</span></label><input id="f_studentId" value="${esc(L.studentId)}"></div>
+        <div class="field ${L.leadSource === "Staff Referral" ? "" : "hidden"}" id="wrap_staffName"><label class="required">Staff Name <span class="pill">UC22 dynamic</span></label><input id="f_staffName" value="${esc(L.staffName)}"></div>
         <div class="field"><label>School / Company</label><input id="f_schoolOrCompany" value="${esc(L.schoolOrCompany || "")}"></div>
         <div class="field"><label>University</label><select id="f_university"><option value="">-- Select --</option>${picklist('universities').map(u => `<option ${L.university === u ? "selected" : ""}>${u}</option>`).join("")}</select></div>
         <div class="field"><label>Program</label><select id="f_program"><option value="">-- Select --</option>${picklist('programs').map(p => `<option ${L.program === p ? "selected" : ""}>${p}</option>`).join("")}</select></div>
@@ -1122,8 +1122,8 @@ function renderLeadModalTab() {
     document.getElementById("f_source").onchange = e => {
       L.leadSource = e.target.value; syncFieldsFromDOM();
       document.getElementById("wrap_digitalSub").classList.toggle("hidden", L.leadSource !== "Digital");
-      document.getElementById("wrap_studentId").classList.toggle("hidden", L.leadSource !== "Student");
-      document.getElementById("wrap_staffName").classList.toggle("hidden", L.leadSource !== "Staff");
+      document.getElementById("wrap_studentId").classList.toggle("hidden", L.leadSource !== "Student Referral");
+      document.getElementById("wrap_staffName").classList.toggle("hidden", L.leadSource !== "Staff Referral");
     };
     document.getElementById("f_isReferral").onchange = e => {
       L.isReferral = e.target.checked;
@@ -1266,6 +1266,14 @@ function renderLeadModalTab() {
   if (tab === "application") {
     body.innerHTML = renderApplicationTabHTML(L);
     bindApplicationTabHandlers(L);
+  }
+
+  if (tab === "offerLetter") {
+    body.innerHTML = renderOfferLetterTabHTML(L);
+  }
+
+  if (tab === "paymentPlan") {
+    body.innerHTML = renderPaymentPlanTabHTML(L);
   }
 
   if (tab === "timeline") {
@@ -1651,6 +1659,43 @@ function renderApplicationTabHTML(L) {
 }
 function bindApplicationTabHandlers(L) { /* all controls here use inline onclick — nothing to bind */ }
 
+/* ---------------- Offer Letter tab: sent to the student by the counsellor once the application form is submitted ---------------- */
+function renderOfferLetterTabHTML(L) {
+  L.applicationForm = L.applicationForm || defaultApplicationForm();
+  const af = L.applicationForm;
+  const submitted = af.status === "Submitted" || af.status === "Reviewed";
+  return `
+    <p class="small-muted">Offer letter dispatch is simulated the same way conversion emails are elsewhere in this demo — no real mail server (see README "Demo limitations").</p>
+    <div class="card" style="box-shadow:none;margin-bottom:16px">
+      <h3>Offer Letter ${af.offerLetter.status === "Issued" ? `<span class="badge converted">Issued — ${esc(af.offerLetter.type)}</span>` : `<span class="badge closed">Not Issued</span>`}</h3>
+      ${!submitted ? `<div class="notice">${icon("info")} The student hasn't submitted the Application Form yet — send it from the Application tab first.</div>` : ""}
+      ${af.offerLetter.status === "Issued" ? `<p class="small-muted">Issued ${fmtDateTime(af.offerLetter.issuedAt)}${L.email ? " and emailed to " + esc(L.email) : ""}</p>` : `
+        <div class="field" style="max-width:280px"><label>Offer Type</label><select id="af_offerType" ${submitted ? "" : "disabled"}>${OFFER_TYPES.map(t => `<option>${t}</option>`).join("")}</select></div>
+        <button class="btn sm" ${submitted ? "" : "disabled"} onclick="issueOfferLetter()">${icon("cap")} Issue Offer Letter</button>`}
+    </div>`;
+}
+
+/* ---------------- Payment Plan tab: sent to the student by the counsellor once the application form is submitted ---------------- */
+function renderPaymentPlanTabHTML(L) {
+  L.applicationForm = L.applicationForm || defaultApplicationForm();
+  const af = L.applicationForm;
+  const submitted = af.status === "Submitted" || af.status === "Reviewed";
+  return `
+    <p class="small-muted">Payment plan dispatch is simulated the same way conversion emails are elsewhere in this demo — no real mail server (see README "Demo limitations").</p>
+    <div class="card" style="box-shadow:none;margin-bottom:16px">
+      <h3>Payment Plan / Financial Documents ${af.paymentPlan.status === "Sent" ? `<span class="badge converted">Sent</span>` : `<span class="badge closed">Not Sent</span>`}</h3>
+      ${!submitted ? `<div class="notice">${icon("info")} The student hasn't submitted the Application Form yet — send it from the Application tab first.</div>` : ""}
+      <div id="paymentPlanRows">
+        ${(af.paymentPlan.installments.length ? af.paymentPlan.installments : [{ label: "Registration Fee", amount: 25000, dueDate: todayStr() }]).map((row, i) => `
+          <div class="grid-2" data-row="${i}">
+            <div class="field"><label>Installment</label><input class="pp_label" value="${esc(row.label)}" ${submitted ? "" : "disabled"}></div>
+            <div class="field"><label>Amount (LKR)</label><input class="pp_amount" type="number" min="0" value="${row.amount}" ${submitted ? "" : "disabled"}></div>
+          </div>`).join("")}
+      </div>
+      ${af.paymentPlan.status === "Sent" ? `<p class="small-muted">Sent ${fmtDateTime(af.paymentPlan.sentAt)}</p>` : `<button class="btn sm secondary" ${submitted ? "" : "disabled"} onclick="addPaymentPlanRow()">+ Add Installment</button> <button class="btn sm" ${submitted ? "" : "disabled"} onclick="sendPaymentPlan()">${icon("card")} Send Payment Plan</button>`}
+    </div>`;
+}
+
 /* ============================================================
    APPLY ONLINE — the student-facing Application Form (UCL theme)
    Reachable directly (no counsellor assignment implied) to simulate a visitor filling it in on
@@ -1997,7 +2042,7 @@ function exportLeadTimelinePDF() {
       <tr><th style="width:22%">Lead</th><td>${esc(L.name)}</td><th style="width:22%">Stage</th><td>${esc(stageLabel(L.stage))}</td></tr>
       <tr><th>Mobile</th><td>${esc(L.mobile)}</td><th>Email</th><td>${esc(L.email) || "—"}</td></tr>
       <tr><th>University</th><td>${esc(L.university) || "—"}</td><th>Program</th><td>${esc(L.program) || "—"}</td></tr>
-      <tr><th>Source</th><td>${esc(L.leadSource)}</td><th>Assigned To</th><td>${esc(userName(L.assignedTo))}</td></tr>
+      <tr><th>Source</th><td>${esc(L.leadSource)}${L.leadSource === "Student Referral" && L.studentId ? " — " + esc(L.studentId) : ""}${L.leadSource === "Staff Referral" && L.staffName ? " — " + esc(L.staffName) : ""}</td><th>Assigned To</th><td>${esc(userName(L.assignedTo))}</td></tr>
       <tr><th>Mode of Contact</th><td>${esc(L.modeOfContact) || "—"}</td><th></th><td></td></tr>
       <tr><th>Intake</th><td>${esc((DB.intakes.find(i => i.id === L.intakeId) || {}).name || "—")}</td><th>Created</th><td>${fmtDate(L.createdAt)}</td></tr>
     </tbody></table>`;
@@ -2036,8 +2081,8 @@ function saveLeadModal() {
   syncFieldsFromDOM();
   const L = window.__editingLead;
   if (!L.name || !L.mobile) { toast("Name and Mobile are required.", "error"); return; }
-  if (L.leadSource === "Student" && !L.studentId) { toast("Student ID is required when Lead Source = Student (UC21 - AF2).", "error"); return; }
-  if (L.leadSource === "Staff" && !L.staffName) { toast("Staff Name is required when Lead Source = Staff (UC22 - AF1).", "error"); return; }
+  if (L.leadSource === "Student Referral" && !L.studentId) { toast("Student ID is required when Lead Source = Student Referral (UC21 - AF2).", "error"); return; }
+  if (L.leadSource === "Staff Referral" && !L.staffName) { toast("Staff Name is required when Lead Source = Staff Referral (UC22 - AF1).", "error"); return; }
   if (L.district === "Other" && !L.districtOther) { toast("Please specify the district (UC58 - AF1).", "error"); return; }
 
   const dup = checkDuplicate(L);
